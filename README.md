@@ -1,0 +1,1 @@
+This repo is for EE274, implementing more LZ77 algorithms, originally from https://github.com/kedartatwawadi/stanford_compression_library
