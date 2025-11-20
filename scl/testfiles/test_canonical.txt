@@ -1,0 +1,6 @@
+This is a simple test file for Canonical Huffman coding.
+We want some characters to appear many many times......
+aaaaabbbbccccddddeeeeeeeeeeeeeeeeeeeee
+1234567890!@#$%^&*()_+-=~[]
+THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.
+the quick brown fox jumps over the lazy dog.
