@@ -25,6 +25,9 @@ import argparse
 import os
 import tempfile
 from typing import List, Tuple
+import lzma
+from tqdm import tqdm
+
 
 from scl.compressors.elias_delta_uint_coder import EliasDeltaUintEncoder
 from scl.compressors.huffman_coder import HuffmanEncoder
@@ -369,7 +372,7 @@ def run_single_file_benchmark(path: str, block_size: int = 100_000) -> None:
         base_encoded_path = os.path.join(tmpdir, "baseline.lz77")
         base_decoded_path = os.path.join(tmpdir, "baseline.dec")
 
-        base_enc.encode_file(path, base_encoded_path, block_size=block_size)
+        encode_file_with_progress(base_enc, path, base_encoded_path, block_size=block_size)
         base_dec.decode_file(base_encoded_path, base_decoded_path)
 
         with open(path, "rb") as f_in, open(base_decoded_path, "rb") as f_out:
@@ -384,7 +387,7 @@ def run_single_file_benchmark(path: str, block_size: int = 100_000) -> None:
         can_lit_encoded_path = os.path.join(tmpdir, "canonical_lit.lz77")
         can_lit_decoded_path = os.path.join(tmpdir, "canonical_lit.dec")
 
-        can_lit_enc.encode_file(path, can_lit_encoded_path, block_size=block_size)
+        encode_file_with_progress(can_lit_enc, path, can_lit_encoded_path, block_size=block_size)
         can_lit_dec.decode_file(can_lit_encoded_path, can_lit_decoded_path)
 
         with open(path, "rb") as f_in, open(can_lit_decoded_path, "rb") as f_out:
@@ -399,7 +402,7 @@ def run_single_file_benchmark(path: str, block_size: int = 100_000) -> None:
         can_all_encoded_path = os.path.join(tmpdir, "canonical_all.lz77")
         can_all_decoded_path = os.path.join(tmpdir, "canonical_all.dec")
 
-        can_all_enc.encode_file(path, can_all_encoded_path, block_size=block_size)
+        encode_file_with_progress(can_all_enc, path, can_all_encoded_path, block_size=block_size)
         can_all_dec.decode_file(can_all_encoded_path, can_all_decoded_path)
 
         with open(path, "rb") as f_in, open(can_all_decoded_path, "rb") as f_out:
@@ -444,8 +447,65 @@ def run_single_file_benchmark(path: str, block_size: int = 100_000) -> None:
             f"{can_header_bits / emp_header_bits:.4f}"
         )
 
+def run_data_folder_benchmarks(data_folder: str, block_size: int = 100_000):
+    """
+    Scan a folder (e.g., testfiles/data/) for .xz files,
+    decompress each to a temporary raw file, and run the benchmark.
+    """
+    if not os.path.isdir(data_folder):
+        print(f"[Error] {data_folder} is not a directory.")
+        return
 
-def main():
+    files = sorted(os.listdir(data_folder))
+    xz_files = [f for f in files if f.endswith(".xz")]
+
+    if not xz_files:
+        print(f"[Warning] No .xz files found in {data_folder}")
+        return
+
+    print(f"\n=== Running benchmarks on folder: {data_folder} ===")
+    print(f"Found {len(xz_files)} compressed files.\n")
+
+    for fname in xz_files:
+        full_path = os.path.join(data_folder, fname)
+        print(f"\n--- Decompressing {fname} ---")
+
+        # Decompress .xz to a temporary raw file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_out = os.path.join(tmpdir, fname.replace(".xz", ".raw"))
+
+            with lzma.open(full_path, "rb") as f_in, open(raw_out, "wb") as f_out:
+                f_out.write(f_in.read())
+
+            # Run benchmark on the decompressed file
+            run_single_file_benchmark(raw_out, block_size=block_size)
+
+def encode_file_with_progress(encoder, input_path, output_path, block_size=100_000):
+    """
+    A wrapper around encoder.encode_file that displays a progress bar
+    based on how many bytes have been read from the input file.
+    """
+    file_size = os.path.getsize(input_path)
+    pbar = tqdm(total=file_size, unit="B", unit_scale=True, desc=f"Compressing {os.path.basename(input_path)}")
+
+    # We mimic chunk reading to update the progress bar,
+    # but still rely on encoder.encode_file for actual compression.
+    # So we manually read input and feed it chunk-by-chunk.
+    with open(input_path, "rb") as f_in, open(output_path, "wb") as f_out:
+        # But since LZ77Encoder expects to read the file path itself,
+        # we simply track progress manually using a loop.
+        while True:
+            chunk = f_in.read(block_size)
+            if not chunk:
+                break
+            pbar.update(len(chunk))
+
+        # After simulating progress, call actual encoder
+        encoder.encode_file(input_path, output_path, block_size=block_size)
+
+    pbar.close()
+
+def main_old():
     parser = argparse.ArgumentParser(
         description=(
             "Compare baseline LZ77 vs. LZ77 with canonical Huffman "
@@ -473,6 +533,49 @@ def main():
             print(f"Warning: {path} is not a file, skipping.")
             continue
         run_single_file_benchmark(path, block_size=args.block_size)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compare baseline LZ77 vs. LZ77 with canonical Huffman "
+            "on literals and on all LZ77 streams."
+        )
+    )
+
+    parser.add_argument(
+        "-i",
+        "--input",
+        nargs="+",
+        help="Input file(s) to compress and benchmark.",
+    )
+
+    parser.add_argument(
+        "--data-folder",
+        type=str,
+        help="Folder containing .xz files for batch benchmarking.",
+    )
+
+    parser.add_argument(
+        "-b",
+        "--block_size",
+        type=int,
+        default=100_000,
+        help="Block size used by LZ77 encode_file (default: 100000).",
+    )
+
+    args = parser.parse_args()
+
+    # If user passes --data-folder, run all files in that folder
+    if args.data_folder:
+        run_data_folder_benchmarks(args.data_folder, block_size=args.block_size)
+
+    # If specific files are provided via -i, run them
+    if args.input:
+        for path in args.input:
+            if not os.path.isfile(path):
+                print(f"Warning: {path} is not a file, skipping.")
+                continue
+            run_single_file_benchmark(path, block_size=args.block_size)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,238 @@
+=== Benchmark on file: ../testfiles/alice_in_wonderland.txt ===
+Raw size: 148208 bytes
+Compressing alice_in_wonderland.txt: 100%|████████████████████████████████████████████████████████████████████| 148k/148k [00:00<00:00, 529kB/s]
+Compressing alice_in_wonderland.txt: 100%|████████████████████████████████████████████████████████████████████| 148k/148k [00:00<00:00, 525kB/s]
+Compressing alice_in_wonderland.txt: 100%|████████████████████████████████████████████████████████████████████| 148k/148k [00:00<00:00, 520kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 53418
+  Canonical (literals) : 53355
+  Canonical (all)      : 53288
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.3604
+  Canonical (literals) : 0.3600
+  Canonical (all)      : 0.3595
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 25515
+  Empirical Huffman header bits : 1105
+  Canonical Huffman header bits : 789
+  Canonical / Empirical header  : 0.7140
+
+=== Benchmark on file: ../testfiles/big.txt ===
+Raw size: 6488666 bytes
+Compressed sizes (bytes):
+  Baseline LZ77        : 2094141
+  Canonical (literals) : 2093311
+  Canonical (all)      : 2090862
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.3227
+  Canonical (literals) : 0.3226
+  Canonical (all)      : 0.3222
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 217232
+  Empirical Huffman header bits : 1611
+  Canonical Huffman header bits : 870
+  Canonical / Empirical header  : 0.5400
+
+=== Benchmark on file: ../testfiles/big.txt ===
+Raw size: 6488666 bytes
+Compressing big.txt: 100%|██████████████████████████████████████████████████████████████████████████████████| 6.49M/6.49M [00:33<00:00, 193kB/s]
+Compressing big.txt: 100%|██████████████████████████████████████████████████████████████████████████████████| 6.49M/6.49M [00:34<00:00, 187kB/s]
+Compressing big.txt: 100%|██████████████████████████████████████████████████████████████████████████████████| 6.49M/6.49M [00:34<00:00, 186kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 2094141
+  Canonical (literals) : 2093311
+  Canonical (all)      : 2090862
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.3227
+  Canonical (literals) : 0.3226
+  Canonical (all)      : 0.3222
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 217232
+  Empirical Huffman header bits : 1611
+  Canonical Huffman header bits : 870
+  Canonical / Empirical header  : 0.5400
+(ee274_env) hanboyu@hanboyudeMacBook-Pro compressors % python lz77_canonical_benchmark.py --data-folder ../testfiles/data/
+
+
+=== Running benchmarks on folder: ../testfiles/data/ ===
+Found 8 compressed files.
+
+
+--- Decompressing MG44-MathGuide.tar.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmp7nmro5hi/MG44-MathGuide.tar.raw ===
+Raw size: 10956800 bytes
+Compressing MG44-MathGuide.tar.raw: 100%|███████████████████████████████████████████████████████████████████| 11.0M/11.0M [00:28<00:00, 385kB/s]
+Compressing MG44-MathGuide.tar.raw: 100%|███████████████████████████████████████████████████████████████████| 11.0M/11.0M [00:28<00:00, 389kB/s]
+Compressing MG44-MathGuide.tar.raw: 100%|███████████████████████████████████████████████████████████████████| 11.0M/11.0M [00:28<00:00, 386kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 2432087
+  Canonical (literals) : 2426541
+  Canonical (all)      : 2425483
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.2220
+  Canonical (literals) : 0.2215
+  Canonical (all)      : 0.2214
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 2233068
+  Empirical Huffman header bits : 5076
+  Canonical Huffman header bits : 2080
+  Canonical / Empirical header  : 0.4098
+
+--- Decompressing bootstrap-3.3.6.min.css.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmpspy50ybg/bootstrap-3.3.6.min.css.raw ===
+Raw size: 121260 bytes
+Compressing bootstrap-3.3.6.min.css.raw: 100%|████████████████████████████████████████████████████████████████| 121k/121k [00:00<00:00, 474kB/s]
+Compressing bootstrap-3.3.6.min.css.raw: 100%|████████████████████████████████████████████████████████████████| 121k/121k [00:00<00:00, 477kB/s]
+Compressing bootstrap-3.3.6.min.css.raw: 100%|████████████████████████████████████████████████████████████████| 121k/121k [00:00<00:00, 476kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 20126
+  Canonical (literals) : 20100
+  Canonical (all)      : 20040
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.1660
+  Canonical (literals) : 0.1658
+  Canonical (all)      : 0.1653
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 7035
+  Empirical Huffman header bits : 979
+  Canonical Huffman header bits : 763
+  Canonical / Empirical header  : 0.7794
+
+--- Decompressing eff.html.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmpupbfh0lo/eff.html.raw ===
+Raw size: 41684 bytes
+Compressing eff.html.raw: 100%|█████████████████████████████████████████████████████████████████████████████| 41.7k/41.7k [00:00<00:00, 736kB/s]
+Compressing eff.html.raw: 100%|█████████████████████████████████████████████████████████████████████████████| 41.7k/41.7k [00:00<00:00, 725kB/s]
+Compressing eff.html.raw: 100%|█████████████████████████████████████████████████████████████████████████████| 41.7k/41.7k [00:00<00:00, 740kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 10220
+  Canonical (literals) : 10188
+  Canonical (all)      : 10154
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.2452
+  Canonical (literals) : 0.2444
+  Canonical (all)      : 0.2436
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 8082
+  Empirical Huffman header bits : 1146
+  Canonical Huffman header bits : 889
+  Canonical / Empirical header  : 0.7757
+
+--- Decompressing girl-brunette.blend.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmpmqlzly3n/girl-brunette.blend.raw ===
+Raw size: 1817852 bytes
+Compressing girl-brunette.blend.raw: 100%|██████████████████████████████████████████████████████████████████| 1.82M/1.82M [00:04<00:00, 438kB/s]
+Compressing girl-brunette.blend.raw: 100%|██████████████████████████████████████████████████████████████████| 1.82M/1.82M [00:04<00:00, 421kB/s]
+Compressing girl-brunette.blend.raw: 100%|██████████████████████████████████████████████████████████████████| 1.82M/1.82M [00:04<00:00, 425kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 935427
+  Canonical (literals) : 933220
+  Canonical (all)      : 932825
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.5146
+  Canonical (literals) : 0.5134
+  Canonical (all)      : 0.5131
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 821129
+  Empirical Huffman header bits : 4654
+  Canonical Huffman header bits : 2077
+  Canonical / Empirical header  : 0.4463
+
+--- Decompressing jquery-2.1.4.min.js.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmpnwgr8amk/jquery-2.1.4.min.js.raw ===
+Raw size: 84345 bytes
+Compressing jquery-2.1.4.min.js.raw: 100%|██████████████████████████████████████████████████████████████████| 84.3k/84.3k [00:00<00:00, 660kB/s]
+Compressing jquery-2.1.4.min.js.raw: 100%|██████████████████████████████████████████████████████████████████| 84.3k/84.3k [00:00<00:00, 656kB/s]
+Compressing jquery-2.1.4.min.js.raw: 100%|██████████████████████████████████████████████████████████████████| 84.3k/84.3k [00:00<00:00, 661kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 31322
+  Canonical (literals) : 31266
+  Canonical (all)      : 31216
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.3714
+  Canonical (literals) : 0.3707
+  Canonical (all)      : 0.3701
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 22384
+  Empirical Huffman header bits : 1312
+  Canonical Huffman header bits : 860
+  Canonical / Empirical header  : 0.6555
+
+--- Decompressing random.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmpjbf5nreh/random.raw ===
+Raw size: 8388608 bytes
+Compressing random.raw: 100%|███████████████████████████████████████████████████████████████████████████████| 8.39M/8.39M [00:10<00:00, 818kB/s]
+Compressing random.raw: 100%|███████████████████████████████████████████████████████████████████████████████| 8.39M/8.39M [00:10<00:00, 821kB/s]
+Compressing random.raw: 100%|███████████████████████████████████████████████████████████████████████████████| 8.39M/8.39M [00:11<00:00, 722kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 8431028
+  Canonical (literals) : 8412212
+  Canonical (all)      : 8412212
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 1.0051
+  Canonical (literals) : 1.0028
+  Canonical (all)      : 1.0028
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 8388608
+  Empirical Huffman header bits : 5774
+  Canonical Huffman header bits : 2080
+  Canonical / Empirical header  : 0.3602
+
+--- Decompressing vmlinux-4.2.6-300.fc23.x86_64.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmp2z10f9vk/vmlinux-4.2.6-300.fc23.x86_64.raw ===
+Raw size: 19667216 bytes
+Compressing vmlinux-4.2.6-300.fc23.x86_64.raw: 100%|████████████████████████████████████████████████████████| 19.7M/19.7M [01:23<00:00, 236kB/s]
+Compressing vmlinux-4.2.6-300.fc23.x86_64.raw: 100%|████████████████████████████████████████████████████████| 19.7M/19.7M [01:26<00:00, 228kB/s]
+Compressing vmlinux-4.2.6-300.fc23.x86_64.raw: 100%|████████████████████████████████████████████████████████| 19.7M/19.7M [01:29<00:00, 220kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 5969015
+  Canonical (literals) : 5958357
+  Canonical (all)      : 5951846
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.3035
+  Canonical (literals) : 0.3030
+  Canonical (all)      : 0.3026
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 3484997
+  Empirical Huffman header bits : 5139
+  Canonical Huffman header bits : 2047
+  Canonical / Empirical header  : 0.3983
+
+--- Decompressing zlib.wasm.xz ---
+
+=== Benchmark on file: /var/folders/yb/k21jmd4x50jfyvb28z3n8kr80000gn/T/tmprzz1f2sc/zlib.wasm.raw ===
+Raw size: 86408 bytes
+Compressing zlib.wasm.raw: 100%|████████████████████████████████████████████████████████████████████████████| 86.4k/86.4k [00:00<00:00, 891kB/s]
+Compressing zlib.wasm.raw: 100%|████████████████████████████████████████████████████████████████████████████| 86.4k/86.4k [00:00<00:00, 903kB/s]
+Compressing zlib.wasm.raw: 100%|████████████████████████████████████████████████████████████████████████████| 86.4k/86.4k [00:00<00:00, 911kB/s]
+Compressed sizes (bytes):
+  Baseline LZ77        : 41156
+  Canonical (literals) : 41056
+  Canonical (all)      : 41010
+Compression ratios (compressed/raw):
+  Baseline LZ77        : 0.4763
+  Canonical (literals) : 0.4751
+  Canonical (all)      : 0.4746
+
+Literals header overhead (single-block parse):
+  #literals in stream           : 35052
+  Empirical Huffman header bits : 2823
+  Canonical Huffman header bits : 2026
+  Canonical / Empirical header  : 0.7177
