@@ -696,12 +696,10 @@ def run_single_file_benchmark(
     
     # Empirical Huffman (Baseline)
     emp_total_bytes = results["Baseline (Empirical Huffman)"]["size"]
-    emp_bitrate = (emp_total_bytes * 8) / len(data_bytes) if len(data_bytes) > 0 else 0
     emp_ratio = results["Baseline (Empirical Huffman)"]["ratio"]
     
     comparison_data.append({
         "method": "Huffman (Empirical)",
-        "bitrate": emp_bitrate,
         "header_bytes": emp_header_bytes,
         "total_bytes": emp_total_bytes,
         "ratio": emp_ratio
@@ -714,31 +712,68 @@ def run_single_file_benchmark(
         
         method_key = f"tANS literals (table_log={table_log})"
         tans_total_bytes = results[method_key]["size"]
-        tans_bitrate = (tans_total_bytes * 8) / len(data_bytes) if len(data_bytes) > 0 else 0
         tans_ratio = results[method_key]["ratio"]
         
         comparison_data.append({
             "method": f"tANS (log={table_log})",
-            "bitrate": tans_bitrate,
             "header_bytes": tans_header_bytes,
             "total_bytes": tans_total_bytes,
             "ratio": tans_ratio
         })
     
-    # Print comparison table
-    print(f"{'Method':<25} {'Bitrate (bps)':>15} {'Header (bytes)':>18} {'Total (bytes)':>16} {'Ratio':>10}")
-    print("-" * 90)
+    # Print comparison table (4 dimensions: Header, Payload, Total, Ratio)
+    print(f"{'Method':<25} {'Header (bytes)':>18} {'Payload (bytes)':>18} {'Total (bytes)':>16} {'Ratio':>10}")
+    print("-" * 95)
     
     for data in comparison_data:
+        payload_bytes = data['total_bytes'] - data['header_bytes']
         print(
             f"{data['method']:<25} "
-            f"{data['bitrate']:>15.2f} "
             f"{data['header_bytes']:>18,} "
+            f"{payload_bytes:>18,} "
             f"{data['total_bytes']:>16,} "
             f"{data['ratio']:>10.4f}"
         )
     
-    print(f"{'=' * 90}\n")
+    print(f"{'=' * 95}")
+    
+    # Add payload efficiency analysis
+    print("\nPAYLOAD EFFICIENCY ANALYSIS")
+    print("=" * 95)
+    
+    # Find Huffman baseline payload
+    huffman_data = None
+    for data in comparison_data:
+        if "Huffman" in data['method']:
+            huffman_data = data
+            break
+    
+    if huffman_data:
+        huffman_payload = huffman_data['total_bytes'] - huffman_data['header_bytes']
+        print(f"{'Method':<25} {'Payload (bytes)':>18} {'vs Huffman Payload':>20} {'Payload Efficiency':>18}")
+        print("-" * 95)
+        
+        for data in comparison_data:
+            payload_bytes = data['total_bytes'] - data['header_bytes']
+            if huffman_payload > 0:
+                payload_ratio = payload_bytes / huffman_payload
+                efficiency_pct = (1 - payload_ratio) * 100 if payload_ratio != 1 else 0
+                efficiency_str = f"{efficiency_pct:+.1f}%"
+            else:
+                efficiency_str = "N/A"
+            
+            vs_huffman_str = f"{payload_bytes - huffman_payload:+,}" if huffman_payload > 0 else "N/A"
+            
+            print(
+                f"{data['method']:<25} "
+                f"{payload_bytes:>18,} "
+                f"{vs_huffman_str:>20} "
+                f"{efficiency_str:>18}"
+            )
+        
+        print(f"{'=' * 95}")
+    
+    print(f"\n{'=' * 95}\n")
 
 
 def main():
