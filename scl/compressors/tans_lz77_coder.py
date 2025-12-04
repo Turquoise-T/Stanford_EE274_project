@@ -395,21 +395,54 @@ class LZ77TANSStreamsDecoder:
         match_lengths_freqs = decode_freqs()
         match_offsets_freqs = decode_freqs()
         
-        # Decode each stream
-        # Note: Need to know where each stream ends - simplified here
-        # In production, store stream lengths
-        
+        # Now decode each stream using tANS
         decoder = TANSDecoder(self.table_log)
         
-        # For simplicity, assume remaining bits are distributed equally
-        # In production, store actual lengths
-        remaining_bits = len(encoded_bitarray) - bit_pos
+        # Decode literals
+        if num_literals > 0 and literals_freqs:
+            literals_bitarray = encoded_bitarray[bit_pos:]
+            literals = decoder.decode(literals_bitarray, num_literals, literals_freqs)
+            # Skip past the encoded literals stream
+            # Format: [final_state (32)][bitstream_length (32)][bitstream]
+            state_bits = 32
+            length_bits = 32
+            bitstream_length = bitarray_to_uint(literals_bitarray[state_bits:state_bits + length_bits])
+            bit_pos += state_bits + length_bits + bitstream_length
+        else:
+            literals = []
         
-        # This is simplified - production code needs proper stream delimiting
-        literals = []
-        literal_counts = []
-        match_lengths = []
-        match_offsets = []
+        # Decode literal_counts
+        if num_sequences > 0 and literal_counts_freqs:
+            lc_bitarray = encoded_bitarray[bit_pos:]
+            literal_counts = decoder.decode(lc_bitarray, num_sequences, literal_counts_freqs)
+            state_bits = 32
+            length_bits = 32
+            bitstream_length = bitarray_to_uint(lc_bitarray[state_bits:state_bits + length_bits])
+            bit_pos += state_bits + length_bits + bitstream_length
+        else:
+            literal_counts = []
+        
+        # Decode match_lengths
+        if num_sequences > 0 and match_lengths_freqs:
+            ml_bitarray = encoded_bitarray[bit_pos:]
+            match_lengths = decoder.decode(ml_bitarray, num_sequences, match_lengths_freqs)
+            state_bits = 32
+            length_bits = 32
+            bitstream_length = bitarray_to_uint(ml_bitarray[state_bits:state_bits + length_bits])
+            bit_pos += state_bits + length_bits + bitstream_length
+        else:
+            match_lengths = []
+        
+        # Decode match_offsets
+        if num_sequences > 0 and match_offsets_freqs:
+            mo_bitarray = encoded_bitarray[bit_pos:]
+            match_offsets = decoder.decode(mo_bitarray, num_sequences, match_offsets_freqs)
+            state_bits = 32
+            length_bits = 32
+            bitstream_length = bitarray_to_uint(mo_bitarray[state_bits:state_bits + length_bits])
+            bit_pos += state_bits + length_bits + bitstream_length
+        else:
+            match_offsets = []
         
         # Reconstruct sequences
         lz77_sequences = []
@@ -420,5 +453,5 @@ class LZ77TANSStreamsDecoder:
                 match_offsets[i] if i < len(match_offsets) else 0
             ))
         
-        return (lz77_sequences, bytearray(literals)), len(encoded_bitarray)
+        return (lz77_sequences, bytearray(literals)), bit_pos
 
