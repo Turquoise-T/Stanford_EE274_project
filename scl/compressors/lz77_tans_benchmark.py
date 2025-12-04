@@ -1,25 +1,26 @@
 """
-Benchmark script to compare baseline LZ77 (empirical Huffman)
-vs. LZ77 with tANS on different streams.
+Benchmark script for real-world system comparison: LZ77 + tANS vs LZ77 + Huffman
 
 Usage:
     python lz77_tans_benchmark.py -i path/to/file1 path/to/file2 ...
     python lz77_tans_benchmark.py -i path/to/file1 --table_log 8 10 12
 
-This script does three things:
-  1. Defines LZ77 stream encoders/decoders that use tANS:
-        - only for literals
-        - for literals + literal_count + match_length + match_offset (all streams)
-  2. For each input file, compresses it with:
-        - baseline LZ77Encoder / LZ77Decoder (empirical Huffman)
-        - LZ77EncoderTANSLiterals / LZ77DecoderTANSLiterals
-        - LZ77EncoderTANSAll / LZ77DecoderTANSAll
-     and compares compressed sizes and compression ratios.
-  3. For the LZ77 parsing of the whole file as a single block, computes
-     the header overhead (in bits) of:
-        - EmpiricalIntHuffmanEncoder (baseline)
-        - TANSEncoder (with different table_log values)
-     for the literals stream only.
+This script performs a complete system-level comparison:
+  1. Compresses files with:
+        - Baseline: LZ77 + Empirical Huffman
+        - Test: LZ77 + tANS (literals only, with native header format)
+  
+  2. Reports 4 key metrics:
+        - Bitrate (bits per byte): Overall compression efficiency
+        - Header Size: Actual header overhead in bytes
+        - Total Size: Complete compressed size
+        - Ratio: Compressed/Raw ratio
+  
+  3. Uses realistic header formats:
+        - Empirical Huffman: Elias-Delta compressed counts (compact)
+        - tANS: Native (symbol, frequency) pairs (larger but necessary)
+  
+This reflects real-world performance where header overhead matters.
 """
 
 import argparse
@@ -514,19 +515,23 @@ def compute_literal_header_bits_empirical(literals: List[int]) -> int:
 
 
 def compute_literal_header_bits_tans(literals: List[int], table_log: int) -> int:
-    """Compute model header bits for tANS on literals.
+    """Compute REAL tANS header bits for literals.
 
-    Header includes:
+    Real tANS header format (native implementation):
         [32 bits: num_literals] + [16 bits: num_unique_symbols] +
-        [num_unique_symbols * (32 + 32) bits: (symbol, frequency) pairs]
+        [num_unique_symbols * (16 + 32) bits: (symbol, frequency) pairs]
+    
+    This reflects the actual overhead in the tANS implementation.
     """
     if not literals:
-        return ENCODED_BLOCK_SIZE_HEADER_BITS
+        return 32  # Just num_literals = 0
 
-    # For fairness, tANS uses the same counts header format as empirical Huffman.
-    counts_list = _build_literal_counts_list(literals)
-    counts_encoding = EliasDeltaUintEncoder().encode_block(DataBlock(counts_list))
-    return ENCODED_BLOCK_SIZE_HEADER_BITS + len(counts_encoding)
+    freqs = Counter(literals)
+    num_unique = len(freqs)
+    
+    # Native tANS header: 32 (num_literals) + 16 (num_unique) + num_unique * (16 sym + 32 freq)
+    header_bits = 32 + 16 + (num_unique * (16 + 32))
+    return header_bits
 
 
 # ---------------------------------------------------------------------------
@@ -628,29 +633,7 @@ def run_single_file_benchmark(
             #     "ratio": tans_all_size / raw_size if raw_size > 0 else 0.0,
             # }
 
-    # ---------------- Print Results ----------------
-    print(f"\n{'=' * 70}")
-    print("COMPRESSION RESULTS")
-    print(f"{'=' * 70}")
-    print(f"{'Method':<40} {'Size (bytes)':>12} {'Ratio':>10} {'vs Baseline':>12}")
-    print("-" * 70)
-
-    baseline_size = results["Baseline (Empirical Huffman)"]["size"]
-
-    for method, data in results.items():
-        size = data["size"]
-        ratio = data["ratio"]
-        vs_baseline = (size - baseline_size) / baseline_size * 100 if baseline_size > 0 else 0
-        sign = "+" if vs_baseline > 0 else ""
-        print(
-            f"{method:<40} {size:>12,} {ratio:>9.4f} {sign}{vs_baseline:>10.2f}%"
-        )
-
-    # ---------------- Header overhead for literals ----------------
-    print(f"\n{'=' * 70}")
-    print("HEADER OVERHEAD ANALYSIS (single-block parse)")
-    print(f"{'=' * 70}")
-
+    # ---------------- Calculate header sizes first ----------------
     with open(path, "rb") as f:
         data_bytes = list(f.read())
     data_block = DataBlock(data_bytes)
@@ -661,32 +644,101 @@ def run_single_file_benchmark(
     )
     seqs, lits = parser.lz77_parse_and_generate_sequences(data_block)
 
+    # Calculate header sizes
+    emp_header_bits = compute_literal_header_bits_empirical(lits)
+    emp_header_bytes = emp_header_bits // 8
+    
+    tans_header_bytes_dict = {}
+    for table_log in table_logs:
+        tans_header_bits = compute_literal_header_bits_tans(lits, table_log)
+        tans_header_bytes_dict[table_log] = tans_header_bits // 8
+
+    # ---------------- Print Results with Header Info ----------------
+    print(f"\n{'=' * 85}")
+    print("COMPRESSION RESULTS")
+    print(f"{'=' * 85}")
+    print(f"{'Method':<40} {'Size (bytes)':>12} {'Header':>10} {'Ratio':>10} {'vs Baseline':>12}")
+    print("-" * 85)
+
+    baseline_size = results["Baseline (Empirical Huffman)"]["size"]
+
+    for method, data in results.items():
+        size = data["size"]
+        ratio = data["ratio"]
+        vs_baseline = (size - baseline_size) / baseline_size * 100 if baseline_size > 0 else 0
+        sign = "+" if vs_baseline > 0 else ""
+        
+        # Get header size
+        if method == "Baseline (Empirical Huffman)":
+            header_str = f"{emp_header_bytes:,}"
+        else:
+            # Extract table_log from method name
+            for table_log in table_logs:
+                if f"table_log={table_log}" in method:
+                    header_str = f"{tans_header_bytes_dict[table_log]:,}"
+                    break
+        
+        print(
+            f"{method:<40} {size:>12,} {header_str:>10} {ratio:>9.4f} {sign}{vs_baseline:>10.2f}%"
+        )
+
+    # ---------------- Detailed 4-dimensional comparison ----------------
+    print(f"\n{'=' * 90}")
+    print("DETAILED COMPARISON: tANS vs Baseline (single-block parse)")
+    print(f"{'=' * 90}")
+
     print(f"Number of literals in stream: {len(lits):,}")
     print(f"Number of unique literal values: {len(set(lits))}")
     print()
 
-    emp_header_bits = compute_literal_header_bits_empirical(lits)
-    print(f"{'Method':<40} {'Header (bits)':>15} {'Bytes':>10} {'vs Empirical':>12}")
-    print("-" * 70)
-    print(
-        f"{'Empirical Huffman':<40} {emp_header_bits:>15,} {emp_header_bits//8:>10,} {'baseline':>12}"
-    )
-
+    # Calculate metrics for each method
+    comparison_data = []
+    
+    # Empirical Huffman (Baseline)
+    emp_total_bytes = results["Baseline (Empirical Huffman)"]["size"]
+    emp_bitrate = (emp_total_bytes * 8) / len(data_bytes) if len(data_bytes) > 0 else 0
+    emp_ratio = results["Baseline (Empirical Huffman)"]["ratio"]
+    
+    comparison_data.append({
+        "method": "Huffman (Empirical)",
+        "bitrate": emp_bitrate,
+        "header_bytes": emp_header_bytes,
+        "total_bytes": emp_total_bytes,
+        "ratio": emp_ratio
+    })
+    
+    # tANS
     for table_log in table_logs:
         tans_header_bits = compute_literal_header_bits_tans(lits, table_log)
-        vs_emp = (
-            (tans_header_bits - emp_header_bits) / emp_header_bits * 100
-            if emp_header_bits > 0
-            else 0
-        )
-        sign = "+" if vs_emp > 0 else ""
+        tans_header_bytes = tans_header_bits // 8
+        
+        method_key = f"tANS literals (table_log={table_log})"
+        tans_total_bytes = results[method_key]["size"]
+        tans_bitrate = (tans_total_bytes * 8) / len(data_bytes) if len(data_bytes) > 0 else 0
+        tans_ratio = results[method_key]["ratio"]
+        
+        comparison_data.append({
+            "method": f"tANS (log={table_log})",
+            "bitrate": tans_bitrate,
+            "header_bytes": tans_header_bytes,
+            "total_bytes": tans_total_bytes,
+            "ratio": tans_ratio
+        })
+    
+    # Print comparison table
+    print(f"{'Method':<25} {'Bitrate (bps)':>15} {'Header (bytes)':>18} {'Total (bytes)':>16} {'Ratio':>10}")
+    print("-" * 90)
+    
+    for data in comparison_data:
         print(
-            f"{'tANS (table_log=' + str(table_log) + ')':<40} "
-            f"{tans_header_bits:>15,} {tans_header_bits//8:>10,} "
-            f"{sign}{vs_emp:>10.2f}%"
+            f"{data['method']:<25} "
+            f"{data['bitrate']:>15.2f} "
+            f"{data['header_bytes']:>18,} "
+            f"{data['total_bytes']:>16,} "
+            f"{data['ratio']:>10.4f}"
         )
-
-    print(f"{'=' * 70}\n")
+    
+    print(f"{'=' * 90}\n")
 
 
 def main():
