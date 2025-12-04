@@ -2,23 +2,88 @@
 tANS (tabled Asymmetric Numeral Systems) implementation for LZ77 entropy coding.
 
 This module provides tANS-based entropy encoding/decoding as a drop-in replacement
-for the LZ77StreamsEncoder/Decoder used in lz77_sliding_window.py.
+for the `LZ77StreamsEncoder`/`LZ77StreamsDecoder` used in `lz77.py`.
 
-tANS works by:
-1. Building a symbol table based on frequency statistics
-2. Encoding symbols by transitioning through states in the table
-3. Decoding by reversing the state transitions
+High level:
+- Build a symbol table from empirical frequencies
+- Encode symbols by transitioning through ANS states
+- Decode by reversing the state transitions
 
-Key advantages over Huffman:
-- Near-optimal compression (closer to entropy limit)
-- Faster than arithmetic coding
-- Table-based for efficient implementation
+The integration here keeps the LZ77 parser unchanged and only swaps the entropy
+coding backend. Header formats are designed to be compact and symmetric with the
+baseline empirical Huffman implementation.
 """
 
-import numpy as np
-from scl.utils.bitarray_utils import BitArray, uint_to_bitarray, bitarray_to_uint
-from scl.compressors.lz77 import LZ77Sequence
 from collections import Counter
+
+import numpy as np
+
+from scl.compressors.elias_delta_uint_coder import (
+    EliasDeltaUintDecoder,
+    EliasDeltaUintEncoder,
+)
+from scl.compressors.lz77 import LZ77Sequence
+from scl.core.data_block import DataBlock
+from scl.utils.bitarray_utils import BitArray, bitarray_to_uint, uint_to_bitarray
+
+
+# Number of bits used for the size prefix of Elias–Delta encoded count vectors.
+# This matches `ENCODED_BLOCK_SIZE_HEADER_BITS` in `lz77.py`.
+COUNTS_SIZE_HEADER_BITS = 32
+
+
+def _encode_literal_counts_header(literals):
+    """
+    Encode literal counts using the same scheme as EmpiricalIntHuffmanEncoder.
+
+    Header layout:
+        [32 bits: size_of_counts_encoding] + [counts_encoding_bits]
+
+    where counts_encoding_bits is Elias–Delta coding of a length-256 count vector.
+    """
+    if not literals:
+        # Mirror EmpiricalIntHuffmanEncoder behavior for empty blocks.
+        return uint_to_bitarray(0, COUNTS_SIZE_HEADER_BITS)
+
+    counts = Counter(literals)
+    # Ensure all 256 byte values are represented.
+    counts_list = [counts.get(i, 0) for i in range(256)]
+
+    counts_encoding = EliasDeltaUintEncoder().encode_block(DataBlock(counts_list))
+    return uint_to_bitarray(len(counts_encoding), COUNTS_SIZE_HEADER_BITS) + counts_encoding
+
+
+def _decode_literal_counts_header(encoded_bitarray):
+    """
+    Decode literal counts header encoded by `_encode_literal_counts_header`.
+
+    Returns:
+        freqs (dict): symbol -> count (only symbols with count > 0)
+        num_literals (int): total number of literals in the stream
+        bits_consumed (int): number of bits consumed from encoded_bitarray
+    """
+    counts_encoding_size = bitarray_to_uint(
+        encoded_bitarray[0:COUNTS_SIZE_HEADER_BITS]
+    )
+    bit_pos = COUNTS_SIZE_HEADER_BITS
+
+    if counts_encoding_size == 0:
+        return {}, 0, bit_pos
+
+    counts_block, num_bits_counts = EliasDeltaUintDecoder().decode_block(
+        encoded_bitarray[bit_pos : bit_pos + counts_encoding_size]
+    )
+    assert num_bits_counts == counts_encoding_size
+
+    counts_list = counts_block.data_list
+    # For literals we expect a full 256-long count vector.
+    assert len(counts_list) == 256
+
+    freqs = {i: c for i, c in enumerate(counts_list) if c > 0}
+    num_literals = sum(counts_list)
+
+    bit_pos += counts_encoding_size
+    return freqs, num_literals, bit_pos
 
 
 class TANSEncoder:
@@ -54,18 +119,18 @@ class TANSEncoder:
         # Normalize frequencies to sum to table_size
         total = sum(freqs.values())
         symbols = sorted(freqs.keys())
-        
+
         # Allocate states proportionally to frequencies
         # Ensure each symbol gets at least 1 state
         normalized_freqs = {}
         remaining = self.table_size
-        
+
         for sym in symbols:
             # Round to ensure we use exactly table_size states
             allocated = max(1, int(freqs[sym] * self.table_size / total))
             normalized_freqs[sym] = allocated
             remaining -= allocated
-        
+
         # Distribute remaining states to most frequent symbols
         while remaining != 0:
             for sym in symbols:
@@ -181,13 +246,12 @@ class TANSEncoder:
         
         # Reverse and concatenate efficiently
         bits = sum(reversed(bits_list), BitArray())
-        
-        # Return: [final_state][bitstream_length][bitstream]
+
+        # Layout: [final_state (32 bits)] + [bitstream]
         result = BitArray()
         result += uint_to_bitarray(state, 32)
-        result += uint_to_bitarray(len(bits), 32)
         result += bits
-        
+
         return result
 
 
@@ -210,32 +274,24 @@ class TANSDecoder:
     def decode(self, bitarray, num_symbols, freqs):
         """
         Decode a bitarray back to symbols using TRUE tANS algorithm.
-        
+
         Args:
-        - bitarray: Encoded BitArray (format: [final_state][bitstream_length][bitstream])
+        - bitarray: Encoded BitArray (format: [final_state][bitstream])
         - num_symbols: Number of symbols to decode
         - freqs: Frequency dictionary (needed to rebuild table)
-        
+
         Returns:
-        - List of decoded symbols
+        - (symbols, bits_consumed): list of decoded symbols and bits consumed
         """
         if num_symbols == 0:
-            return []
-        
+            return [], 0
+
         self.build_table(freqs)
-        
+
         # Read final state
-        pos = 0
-        state = bitarray_to_uint(bitarray[pos:pos + 32])
-        pos += 32
-        
-        # Read bitstream length
-        bitstream_len = bitarray_to_uint(bitarray[pos:pos + 32])
-        pos += 32
-        
-        # Extract bitstream
-        bits = bitarray[pos:pos + bitstream_len]
-        
+        state = bitarray_to_uint(bitarray[0:32])
+        bits = bitarray[32:]
+
         # Rebuild cumul_freq and freq from symbol_info
         cumul_freq = {}
         freq = {}
@@ -246,7 +302,7 @@ class TANSDecoder:
         # Decode symbols
         bit_pos = 0
         symbols = []
-        
+
         for _ in range(num_symbols):
             # Get symbol from current state
             slot = state % self.table_size
@@ -254,20 +310,21 @@ class TANSDecoder:
                 break
             sym = self.table[slot]
             symbols.append(sym)
-            
+
             # Recover previous state (TRUE tANS formula)
             slot_in_sym = (slot - cumul_freq[sym]) % freq[sym]
             quot = (state - slot) // self.table_size
             prev_state = quot * freq[sym] + slot_in_sym
             state = prev_state
-            
+
             # Renormalize: read bits if state is too small
             while state < self.table_size and bit_pos + self.table_log <= len(bits):
                 new_bits = bitarray_to_uint(bits[bit_pos:bit_pos + self.table_log])
                 state = (state << self.table_log) | new_bits
                 bit_pos += self.table_log
-        
-        return symbols
+
+        bits_consumed = 32 + bit_pos
+        return symbols, bits_consumed
 
 class LZ77TANSStreamsEncoder:
     """
