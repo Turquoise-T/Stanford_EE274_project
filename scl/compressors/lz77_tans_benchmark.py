@@ -5,10 +5,22 @@ Usage:
     python lz77_tans_benchmark.py -i path/to/file1 path/to/file2 ...
     python lz77_tans_benchmark.py -i path/to/file1 --table_log 8 10 12
 
+DESIGN PHILOSOPHY:
+  This script uses a HYBRID tANS design for fair comparison:
+    - Header: Same Elias-Delta compressed counts format as empirical Huffman baseline
+    - Payload: Pure tANS encoding [final_state][bitstream]
+  
+  This allows apples-to-apples comparison: same header overhead, only the entropy
+  coder (Huffman vs tANS) differs. This isolates the payload coding efficiency.
+  
+  NOTE: For a full native table-based tANS implementation with its own header
+  format, see tans_lz77_coder.py::LZ77TANSStreamsEncoder (which uses explicit
+  frequency tables in the header).
+
 This script performs a complete system-level comparison:
   1. Compresses files with:
         - Baseline: LZ77 + Empirical Huffman
-        - Test: LZ77 + tANS (literals only, with native header format)
+        - Test: LZ77 + tANS (literals only, hybrid header design)
   
   2. Reports 4 key metrics:
         - Bitrate (bits per byte): Overall compression efficiency
@@ -16,16 +28,15 @@ This script performs a complete system-level comparison:
         - Total Size: Complete compressed size
         - Ratio: Compressed/Raw ratio
   
-  3. Uses realistic header formats:
-        - Empirical Huffman: Elias-Delta compressed counts (compact)
-        - tANS: Native (symbol, frequency) pairs (larger but necessary)
-  
-This reflects real-world performance where header overhead matters.
+  3. Header format (shared by both baseline and tANS):
+        - Format: [32 bits: size_of_counts_encoding] + [Elias-Delta(counts[0..255])]
+        - This ensures fair comparison: same model overhead, different payload coding
 """
 
 import argparse
 import os
 import tempfile
+import time
 from typing import List, Tuple
 from collections import Counter
 
@@ -259,9 +270,16 @@ def _decode_literal_counts_header(encoded_bitarray: BitArray) -> Tuple[dict, int
 class LZ77StreamsEncoderTANSLiterals(LZ77StreamsEncoder):
     """LZ77StreamsEncoder variant that uses tANS for literals.
 
+    This is a HYBRID design: it uses the SAME header format as empirical Huffman
+    (Elias-Delta compressed count vector) for fair comparison, but the payload
+    uses tANS encoding instead of Huffman.
+
     Literal counts, match lengths, and match offsets are encoded exactly
     as in the baseline implementation (log-scale binned integers with empirical Huffman),
-    but literals (byte values 0..255) use TANSEncoder.
+    but literals (byte values 0..255) use TANSEncoder for the payload only.
+
+    Note: For a full native tANS implementation with table-based headers, see
+    tans_lz77_coder.py::LZ77TANSStreamsEncoder.
     """
 
     def __init__(self, table_log: int = 10):
@@ -271,11 +289,16 @@ class LZ77StreamsEncoderTANSLiterals(LZ77StreamsEncoder):
     def encode_literals(self, literals: List[int]) -> BitArray:
         """Encode literals using tANS with a compact counts header.
 
-        Layout:
-            [counts header] + [tANS payload]
+        Layout (HYBRID design - shared header, tANS payload):
+            [Elias-Delta counts header] + [tANS payload]
 
-        The counts header matches the empirical Huffman implementation:
-            [32 bits: size_of_counts_encoding] + [Elias–Delta(counts[0..255])].
+        Header format (matches empirical Huffman baseline):
+            [32 bits: size_of_counts_encoding] + [Elias–Delta(counts[0..255])]
+        
+        Payload format (pure tANS):
+            [32 bits: final_state] + [bitstream]
+        
+        This design allows fair comparison: same header overhead, different payload coding.
         """
         counts_list = _build_literal_counts_list(literals)
         header = _encode_literal_counts_header_from_counts(counts_list)
@@ -291,14 +314,23 @@ class LZ77StreamsEncoderTANSLiterals(LZ77StreamsEncoder):
 
 
 class LZ77StreamsDecoderTANSLiterals(LZ77StreamsDecoder):
-    """Decoder matching LZ77StreamsEncoderTANSLiterals."""
+    """Decoder matching LZ77StreamsEncoderTANSLiterals.
+    
+    Uses HYBRID design: decodes Elias-Delta counts header (same as Huffman baseline)
+    followed by pure tANS payload [final_state][bitstream].
+    """
 
     def __init__(self, table_log: int = 10):
         super().__init__()
         self.table_log = table_log
 
     def decode_literals(self, encoded_bitarray: BitArray) -> Tuple[List[int], int]:
-        """Decode literals using tANS and the compact counts header."""
+        """Decode literals using tANS and the compact counts header.
+        
+        Layout (HYBRID design - shared header, tANS payload):
+            Header: Elias-Delta(counts[0..255]) format (matches Huffman baseline)
+            Payload: Pure tANS [final_state][bitstream]
+        """
         freqs, num_literals, bit_pos = _decode_literal_counts_header(encoded_bitarray)
 
         if num_literals == 0:
@@ -342,11 +374,17 @@ class LZ77DecoderTANSLiterals(LZ77Decoder):
 
 
 class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
-    """LZ77StreamsEncoder variant that uses tANS for all streams:
+    """LZ77StreamsEncoder variant that uses tANS for all streams (BENCHMARK-LOCAL).
+    
+    This is a benchmark-specific variant that uses tANS for:
         - literal_count
         - match_length
         - match_offset
-        - literals
+        - literals (with hybrid header: Elias-Delta counts + tANS payload)
+    
+    NOTE: This is distinct from tans_lz77_coder.py::LZ77TANSStreamsEncoder, which
+    uses a full native tANS implementation with table-based headers. This benchmark
+    variant uses hybrid headers for literals to maintain fair comparison.
     """
 
     def __init__(self, table_log: int = 10):
@@ -389,7 +427,11 @@ class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
         return result
 
     def encode_literals(self, literals: List[int]) -> BitArray:
-        """Encode literals using tANS with the same compact counts header."""
+        """Encode literals using tANS with the same compact counts header.
+        
+        Uses HYBRID design: Elias-Delta header (same as baseline) + tANS payload.
+        See LZ77StreamsEncoderTANSLiterals.encode_literals for detailed format.
+        """
         counts_list = _build_literal_counts_list(literals)
         header = _encode_literal_counts_header_from_counts(counts_list)
 
@@ -403,7 +445,10 @@ class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
 
 
 class LZ77StreamsDecoderTANSAll(LZ77StreamsDecoder):
-    """Decoder matching LZ77StreamsEncoderTANSAll."""
+    """Decoder matching LZ77StreamsEncoderTANSAll (BENCHMARK-LOCAL variant).
+    
+    See LZ77StreamsEncoderTANSAll docstring for distinction from native tANS implementation.
+    """
 
     def __init__(self, table_log: int = 10):
         super().__init__()
@@ -515,23 +560,26 @@ def compute_literal_header_bits_empirical(literals: List[int]) -> int:
 
 
 def compute_literal_header_bits_tans(literals: List[int], table_log: int) -> int:
-    """Compute REAL tANS header bits for literals.
+    """Compute tANS header bits for literals.
 
-    Real tANS header format (native implementation):
-        [32 bits: num_literals] + [16 bits: num_unique_symbols] +
-        [num_unique_symbols * (16 + 32) bits: (symbol, frequency) pairs]
+    IMPORTANT: This function computes the header size for the HYBRID tANS design used
+    in this benchmark, which uses the SAME Elias-Delta compressed counts header format
+    as the empirical Huffman baseline (for fair comparison). Only the payload uses
+    tANS encoding.
+
+    Header format (matches empirical Huffman):
+        [32 bits: size_of_counts_encoding] + [Elias-Delta(counts[0..255])]
     
-    This reflects the actual overhead in the tANS implementation.
+    Note: The table_log parameter is kept for API compatibility but is not used
+    in header size calculation, as the header format is independent of table_log.
+
+    For native table-based tANS headers (as in tans_lz77_coder.py), see:
+        [32 bits: num_literals] + [16 bits: num_unique] + 
+        [num_unique * (16 + 32): (symbol, frequency) pairs]
     """
     if not literals:
-        return 32  # Just num_literals = 0
-
-    freqs = Counter(literals)
-    num_unique = len(freqs)
-    
-    # Native tANS header: 32 (num_literals) + 16 (num_unique) + num_unique * (16 sym + 32 freq)
-    header_bits = 32 + 16 + (num_unique * (16 + 32))
-    return header_bits
+        return ENCODED_BLOCK_SIZE_HEADER_BITS
+    return len(_encode_literal_counts_header_from_counts(_build_literal_counts_list(literals)))
 
 
 # ---------------------------------------------------------------------------
@@ -558,19 +606,29 @@ def run_single_file_benchmark(
         base_encoded_path = os.path.join(tmpdir, "baseline.lz77")
         base_decoded_path = os.path.join(tmpdir, "baseline.dec")
 
+        # Measure compression (encode) time for baseline
+        start_time = time.perf_counter()
         base_enc.encode_file(path, base_encoded_path, block_size=block_size)
+        baseline_encode_time = time.perf_counter() - start_time
+
         base_dec.decode_file(base_encoded_path, base_decoded_path)
 
         with open(path, "rb") as f_in, open(base_decoded_path, "rb") as f_out:
             assert f_in.read() == f_out.read(), "Baseline LZ77 decode mismatch!"
 
         baseline_size = os.path.getsize(base_encoded_path)
+        baseline_speed = (
+            (raw_size / baseline_encode_time) / (1024 * 1024)
+            if baseline_encode_time > 0 and raw_size > 0
+            else 0.0
+        )
 
         # Results dictionary
         results = {
             "Baseline (Empirical Huffman)": {
                 "size": baseline_size,
                 "ratio": baseline_size / raw_size if raw_size > 0 else 0.0,
+                "enc_speed": baseline_speed,
             }
         }
 
@@ -588,9 +646,12 @@ def run_single_file_benchmark(
                 tmpdir, f"tans_lit_{table_log}.dec"
             )
 
+            # Measure compression (encode) time for tANS literals-only
+            start_time = time.perf_counter()
             tans_lit_enc.encode_file(
                 path, tans_lit_encoded_path, block_size=block_size
             )
+            tans_lit_encode_time = time.perf_counter() - start_time
             tans_lit_dec.decode_file(tans_lit_encoded_path, tans_lit_decoded_path)
 
             with open(path, "rb") as f_in, open(
@@ -601,9 +662,15 @@ def run_single_file_benchmark(
                 ), f"tANS-literals (table_log={table_log}) decode mismatch!"
 
             tans_lit_size = os.path.getsize(tans_lit_encoded_path)
+            tans_lit_speed = (
+                (raw_size / tans_lit_encode_time) / (1024 * 1024)
+                if tans_lit_encode_time > 0 and raw_size > 0
+                else 0.0
+            )
             results[f"tANS literals (table_log={table_log})"] = {
                 "size": tans_lit_size,
                 "ratio": tans_lit_size / raw_size if raw_size > 0 else 0.0,
+                "enc_speed": tans_lit_speed,
             }
             # tANS all streams (disabled by default; see tans_ablation_results.md for tests)
             # print(f"\n[3/3] Running LZ77 + tANS (all, table_log={table_log})...")
@@ -657,7 +724,10 @@ def run_single_file_benchmark(
     print(f"\n{'=' * 85}")
     print("COMPRESSION RESULTS")
     print(f"{'=' * 85}")
-    print(f"{'Method':<40} {'Size (bytes)':>12} {'Header':>10} {'Ratio':>10} {'vs Baseline':>12}")
+    print(
+        f"{'Method':<40} {'Size (bytes)':>12} {'Header':>10} "
+        f"{'Speed(MB/s)':>12} {'Ratio':>10} {'vs Baseline':>12}"
+    )
     print("-" * 85)
 
     baseline_size = results["Baseline (Empirical Huffman)"]["size"]
@@ -665,6 +735,7 @@ def run_single_file_benchmark(
     for method, data in results.items():
         size = data["size"]
         ratio = data["ratio"]
+        speed = data.get("enc_speed", 0.0)
         vs_baseline = (size - baseline_size) / baseline_size * 100 if baseline_size > 0 else 0
         sign = "+" if vs_baseline > 0 else ""
         
@@ -679,7 +750,8 @@ def run_single_file_benchmark(
                     break
         
         print(
-            f"{method:<40} {size:>12,} {header_str:>10} {ratio:>9.4f} {sign}{vs_baseline:>10.2f}%"
+            f"{method:<40} {size:>12,} {header_str:>10} "
+            f"{speed:>12.2f} {ratio:>9.4f} {sign}{vs_baseline:>10.2f}%"
         )
 
     # ---------------- Detailed 4-dimensional comparison ----------------

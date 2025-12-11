@@ -105,7 +105,7 @@ class DataBlock:
         prob_dist = self.get_empirical_distribution()
         return prob_dist.entropy
 
-
+        
 def test_data_block_basic_ops():
     """checks basic operations for a DataBlock"""
     data_list = [0, 1, 0, 0, 1, 1]
