@@ -73,4 +73,3 @@ python lz77_canonical_benchmark.py --data-folder ../testfiles/data/
 ```shell
 python lz77_canonical_benchmark.py -i ../testfiles/big.txt
 ``` 
->>>>>>> 76e716b5e553c1a5ec4d50353d6054d86dde3239
