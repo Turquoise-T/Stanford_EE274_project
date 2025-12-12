@@ -78,27 +78,27 @@ def select_optimal_table_log(
 ):
     """
     Select optimal table_log for a stream based on alphabet size and symbol count.
-    
+
     Heuristic:
     - Small alphabet or few symbols: use smaller table_log (min_table_log)
     - Large alphabet or many symbols: use larger table_log (max_table_log)
     - Otherwise: use default_table_log
-    
+
     Args:
         symbols: List of symbols to encode
         min_table_log: Minimum table_log to consider (default 8)
         max_table_log: Maximum table_log to consider (default 12)
-    
+
     Returns:
         Optimal table_log value
     """
     if not symbols:
         return min_table_log
-    
+
     # Avoid building a full Counter here; we only need alphabet size.
     alphabet_size = len(set(symbols))
     num_symbols = len(symbols)
-    
+
     # Ensure the table can represent the alphabet (table_size >= alphabet_size).
     min_feasible = max(0, math.ceil(math.log2(max(1, alphabet_size))))
 
@@ -191,41 +191,41 @@ def _freqs_close_enough(
 class TANSEncoder:
     """
     tANS encoder implementing tabled Asymmetric Numeral Systems.
-    
+
     Parameters:
     - table_log: Log2 of table size (table_size = 2^table_log)
                  Larger values give better compression but use more memory
                  Typical values: 8-12
     """
-    
+
     def __init__(self, table_log=10):
         self.table_log = table_log
         self.table_size = 1 << table_log  # 2^table_log
         self.table = None
         self.symbol_info = None
-    
+
     def build_table(self, freqs):
         """
         Build the tANS encoding table from symbol frequencies.
-        
+
         Args:
         - freqs: Dictionary mapping symbols to their frequencies
-        
+
         Returns:
         - table: Encoding table with state transition info
         - symbol_info: Info needed for encoding each symbol
         """
         if not freqs:
             return None, None
-        
+
         symbols = sorted(freqs.keys())
         normalized_freqs = _normalize_freqs_largest_remainder(freqs, self.table_size, min_freq=1)
-        
+
         # Build the state table
         # table[state] = (symbol, next_state_base, num_bits_to_output)
         table = [None] * self.table_size
         symbol_info = {}
-        
+
         position = 0
         for sym in symbols:
             num_states = normalized_freqs[sym]
@@ -233,34 +233,34 @@ class TANSEncoder:
                 'start': position,
                 'freq': num_states
             }
-            
+
             for i in range(num_states):
                 table[position + i] = sym
-            
+
             position += num_states
-        
+
         self.table = table
         self.symbol_info = symbol_info
         return table, symbol_info
-    
+
     def encode_symbol(self, state, symbol, cumul_freq):
         """
         Encode a single symbol and update the state.
-        
+
         Args:
         - state: Current ANS state
         - symbol: Symbol to encode
         - cumul_freq: Cumulative frequency mapping for symbols
-        
+
         Returns:
         - new_state: Updated state after encoding
         - bits_to_output: BitArray of bits to write to the stream
         """
         if symbol not in self.symbol_info:
             raise ValueError(f"Symbol {symbol} not in frequency table")
-        
+
         freq = self.symbol_info[symbol]['freq']
-        
+
         # Renormalization: output bits if state is too large
         bits_list = []
         threshold = freq * self.table_size
@@ -268,51 +268,51 @@ class TANSEncoder:
             # Output lower table_log bits
             bits_list.append(uint_to_bitarray(state & ((1 << self.table_log) - 1), self.table_log))
             state >>= self.table_log
-        
+
         # State transition (TRUE tANS formula)
         slot = state % freq
         new_state = cumul_freq[symbol] + slot + (state // freq) * self.table_size
-        
+
         # Combine all output bits
         bits_to_output = sum(reversed(bits_list), BitArray())
-        
+
         return new_state, bits_to_output
-    
+
     def encode(self, symbols, freqs: Counter = None):
         """
         Encode a sequence of symbols using TRUE tANS algorithm.
-        
+
         Args:
         - symbols: List of symbols to encode
-        
+
         Returns:
         - BitArray with encoded data (NO HEADERS - those are added by caller)
         """
         if not symbols:
             return BitArray([])
-        
+
         # Build table from provided freqs (for table reuse) or from empirical freqs.
         freqs = Counter(symbols) if freqs is None else freqs
         self.build_table(freqs)
-        
+
         # Build cumulative frequency mapping
         cumul_freq = {}
         for sym, info in self.symbol_info.items():
             cumul_freq[sym] = info['start']
-        
+
         # Initialize state
         state = self.table_size
         all_bits = BitArray()
-        
+
         # Process symbols in REVERSE order (tANS property)
         for sym in reversed(symbols):
             if sym not in self.symbol_info:
                 continue
-            
+
             # Encode single symbol using the dedicated method
             state, bits_output = self.encode_symbol(state, sym, cumul_freq)
             all_bits = bits_output + all_bits  # Prepend bits (reverse order)
-        
+
         # Layout: [final_state] + [bitstream]
         result = BitArray()
         result += uint_to_bitarray(state, _TANS_STATE_BITS)
@@ -325,18 +325,18 @@ class TANSDecoder:
     """
     tANS decoder - reverses the encoding process.
     """
-    
+
     def __init__(self, table_log=10):
         self.table_log = table_log
         self.table_size = 1 << table_log
         self.table = None
         self.symbol_info = None
-    
+
     def build_table(self, freqs):
         """Build decoding table from frequencies (same as encoder)."""
         encoder = TANSEncoder(self.table_log)
         self.table, self.symbol_info = encoder.build_table(freqs)
-    
+
     def decode(self, bitarray, num_symbols, freqs):
         """
         Decode a bitarray back to symbols using TRUE tANS algorithm.
@@ -364,7 +364,7 @@ class TANSDecoder:
         for sym, info in self.symbol_info.items():
             cumul_freq[sym] = info['start']
             freq[sym] = info['freq']
-        
+
         # Decode symbols
         bit_pos = 0
         symbols = []
@@ -395,15 +395,15 @@ class TANSDecoder:
 class LZ77TANSStreamsEncoder:
     """
     Replacement for LZ77StreamsEncoder using tANS instead of the original entropy coder.
-    
+
     Encodes LZ77 sequences (literals_count, match_length, match_offset) and literal bytes
     using separate tANS streams for better compression.
-    
+
     Features:
     - Per-stream table_log selection based on alphabet size and symbol count
     - Match-length tANS gating: only uses tANS for match_length if #sequences > threshold
     """
-    
+
     def __init__(
         self,
         table_log=10,
@@ -429,15 +429,15 @@ class LZ77TANSStreamsEncoder:
         self.reuse_max_rel_l1 = reuse_max_rel_l1
         self._prev_freqs = {name: None for name in _STREAMS}  # Counters for non-literal or flat-literal tables
         self._prev_literals = None  # (model_id:int, tables:dict[str, Counter])
-    
+
     def encode_block(self, lz77_sequences, literals):
         """
         Encode LZ77 sequences and literals.
-        
+
         Args:
         - lz77_sequences: List of LZ77Sequence objects
         - literals: bytearray of literal bytes
-        
+
         Returns:
         - BitArray with encoded data
         """
@@ -638,29 +638,29 @@ class LZ77TANSStreamsDecoder:
     """
     Replacement for LZ77StreamsDecoder using tANS.
     """
-    
+
     def __init__(self, table_log=10):
         # Kept for API compatibility; per-stream table_log values are carried in the block header.
         _ = table_log
         self._prev_freqs = {name: None for name in _STREAMS}
         self._prev_literals = None  # (model_id:int, tables:dict[str, Counter])
-    
+
     def decode_block(self, encoded_bitarray):
         """
         Decode LZ77 sequences and literals from encoded bitarray.
-        
+
         Returns:
         - tuple: (lz77_sequences, literals), num_bits_consumed
         """
         bit_pos = 0
-        
+
         # Read counts
         num_sequences = bitarray_to_uint(encoded_bitarray[bit_pos:bit_pos + _COUNT_BITS])
         bit_pos += _COUNT_BITS
-        
+
         num_literals = bitarray_to_uint(encoded_bitarray[bit_pos:bit_pos + _COUNT_BITS])
         bit_pos += _COUNT_BITS
-        
+
         # Read per-stream table_log values
         literals_table_log = bitarray_to_uint(encoded_bitarray[bit_pos:bit_pos + _TABLE_LOG_BITS])
         bit_pos += _TABLE_LOG_BITS
@@ -670,7 +670,7 @@ class LZ77TANSStreamsDecoder:
         bit_pos += _TABLE_LOG_BITS
         match_offsets_table_log = bitarray_to_uint(encoded_bitarray[bit_pos:bit_pos + _TABLE_LOG_BITS])
         bit_pos += _TABLE_LOG_BITS
-        
+
         # Literal model id
         literal_model_id = bitarray_to_uint(encoded_bitarray[bit_pos:bit_pos + _LITERAL_MODEL_BITS])
         bit_pos += _LITERAL_MODEL_BITS
@@ -682,11 +682,11 @@ class LZ77TANSStreamsDecoder:
                     encoded_bitarray[bit_pos:bit_pos + _LITERAL_CLASS_TABLE_LOG_BITS]
                 )
                 bit_pos += _LITERAL_CLASS_TABLE_LOG_BITS
-        
+
         # Read match_length encoding method (0 = tANS, 1 = Golomb)
         match_length_encoding_method = bitarray_to_uint(encoded_bitarray[bit_pos:bit_pos + _ENCODING_METHOD_BITS])
         bit_pos += _ENCODING_METHOD_BITS
-        
+
         # Read Golomb M parameter if using Golomb for match_length
         golomb_M = None
         if match_length_encoding_method == 1:
@@ -697,7 +697,7 @@ class LZ77TANSStreamsDecoder:
         reuse_mask = bitarray_to_uint(encoded_bitarray[bit_pos:bit_pos + _REUSE_MASK_BITS])
         bit_pos += _REUSE_MASK_BITS
         reuse = {name: bool(reuse_mask & (1 << i)) for i, name in enumerate(_STREAMS)}
-        
+
         # Read frequency tables (only when not reused)
         def decode_freqs():
             nonlocal bit_pos
@@ -745,7 +745,7 @@ class LZ77TANSStreamsDecoder:
         literal_counts_freqs = get_table("literal_counts")
         match_lengths_freqs = get_table("match_lengths") if match_length_encoding_method == 0 else Counter()
         match_offsets_freqs = get_table("match_offsets")
-        
+
         # Decode literals
         literals = []
         if num_literals > 0:
@@ -781,7 +781,7 @@ class LZ77TANSStreamsDecoder:
                 for c in classes:
                     literals.append(class_bytes[c][idx[c]])
                     idx[c] += 1
-        
+
         # Decode literal_counts
         literal_counts = []
         if num_sequences > 0 and literal_counts_freqs:
@@ -789,7 +789,7 @@ class LZ77TANSStreamsDecoder:
             lc_bitarray = encoded_bitarray[bit_pos:]
             literal_counts, bits_used = decoder_lc.decode(lc_bitarray, num_sequences, literal_counts_freqs)
             bit_pos += bits_used
-        
+
         # Decode match_lengths (with gating)
         match_lengths = []
         if num_sequences > 0:
@@ -806,7 +806,7 @@ class LZ77TANSStreamsDecoder:
                     ml, bits_consumed = golomb_decoder.decode_symbol(encoded_bitarray[bit_pos:])
                     match_lengths.append(ml)
                     bit_pos += bits_consumed
-        
+
         # Decode match_offsets
         match_offsets = []
         if num_sequences > 0 and match_offsets_freqs:
@@ -814,7 +814,7 @@ class LZ77TANSStreamsDecoder:
             mo_bitarray = encoded_bitarray[bit_pos:]
             match_offsets, bits_used = decoder_mo.decode(mo_bitarray, num_sequences, match_offsets_freqs)
             bit_pos += bits_used
-        
+
         # Reconstruct sequences
         lz77_sequences = []
         for i in range(num_sequences):
@@ -823,6 +823,5 @@ class LZ77TANSStreamsDecoder:
                 match_lengths[i] if i < len(match_lengths) else 0,
                 match_offsets[i] if i < len(match_offsets) else 0
             ))
-        
-        return (lz77_sequences, bytearray(literals)), bit_pos
 
+        return (lz77_sequences, bytearray(literals)), bit_pos
