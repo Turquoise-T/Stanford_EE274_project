@@ -1,50 +1,37 @@
-# Python cache
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
+.Python
 
-# macOS artifacts
 .DS_Store
 
-# IDE / Editor
 .idea/
 .vscode/
 
-# Virtual environments
 env/
 venv/
 ee274_env/
 
-# Byte-compiled / compiled
 *.so
 *.dll
 *.dylib
 
-# Logs
 *.log
 
-# Test files (large)
 scl/testfiles/
-scl/testfiles/*
 
-# Temporary files
 *.tmp
 *.swp
 *.swo
 
-# Output files
 *.out
 *.bin
 
-# Jupyter
 .ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Build artifacts
 build/
 dist/
 *.egg-info/
-
-__pycache__/
-*.pyc
-

@@ -1,52 +1,36 @@
 #!/usr/bin/env python3
-"""
-Test runner for tANS and LZ77 benchmark unit tests.
-
-Usage (from scl/compressors directory):
-    python run_tests.py                    # Run all tests
-    python run_tests.py --tans-only        # Run only tANS coder tests
-    python run_tests.py --benchmark-only   # Run only benchmark tests
-    python run_tests.py --quick            # Run quick tests only (skip slow ones)
-
-Alternative usage (from project root):
-    python -m scl.compressors.run_tests                    # Run all tests
-    python -m scl.compressors.run_tests --tans-only        # Run only tANS coder tests
-    python -m scl.compressors.run_tests --benchmark-only   # Run only benchmark tests
-    python -m scl.compressors.run_tests --quick            # Run quick tests only (skip slow ones)
-"""
-
 import sys
 import unittest
 import argparse
 import time
+import importlib
+
+
+def _import_test_module(module_basename: str):
+    for name in (module_basename, f"scl.compressors.{module_basename}"):
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            continue
+    return importlib.import_module(module_basename)
 
 
 def run_tans_coder_tests(verbosity=2):
-    """Run tests for tans_lz77_coder.py"""
     print("=" * 60)
     print("Running tANS Coder Tests")
     print("=" * 60)
     
-    # Import test module (absolute import for direct execution)
-    from test_tans_lz77_coder import (
-        TestTANSEncoder,
-        TestTANSDecoder,
-        TestTANSRoundTrip,
-        TestLZ77TANSStreamsEncoder,
-        TestTANSEdgeCases,
-        TestTANSPerformance,
-    )
+    m = _import_test_module("test_tans_lz77_coder")
     
-    # Create test suite
+    loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     
     # Add test classes
-    suite.addTest(unittest.makeSuite(TestTANSEncoder))
-    suite.addTest(unittest.makeSuite(TestTANSDecoder))
-    suite.addTest(unittest.makeSuite(TestTANSRoundTrip))
-    suite.addTest(unittest.makeSuite(TestLZ77TANSStreamsEncoder))
-    suite.addTest(unittest.makeSuite(TestTANSEdgeCases))
-    suite.addTest(unittest.makeSuite(TestTANSPerformance))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestTANSEncoder))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestTANSDecoder))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestTANSRoundTrip))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestTANSEdgeCases))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestTANSPerformance))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=verbosity)
@@ -56,31 +40,22 @@ def run_tans_coder_tests(verbosity=2):
 
 
 def run_benchmark_tests(verbosity=2):
-    """Run tests for lz77_tans_benchmark.py"""
     print("=" * 60)
     print("Running LZ77 tANS Benchmark Tests")
     print("=" * 60)
     
-    # Import test module (absolute import for direct execution)
-    from test_lz77_tans_benchmark import (
-        TestHeaderFunctions,
-        TestHeaderComputationFunctions,
-        TestLZ77StreamsEncoderTANSLiterals,
-        TestLZ77EncoderTANSLiterals,
-        TestBenchmarkIntegration,
-        TestEdgeCases,
-    )
+    m = _import_test_module("test_lz77_tans_benchmark")
     
-    # Create test suite
+    loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     
     # Add test classes
-    suite.addTest(unittest.makeSuite(TestHeaderFunctions))
-    suite.addTest(unittest.makeSuite(TestHeaderComputationFunctions))
-    suite.addTest(unittest.makeSuite(TestLZ77StreamsEncoderTANSLiterals))
-    suite.addTest(unittest.makeSuite(TestLZ77EncoderTANSLiterals))
-    suite.addTest(unittest.makeSuite(TestBenchmarkIntegration))
-    suite.addTest(unittest.makeSuite(TestEdgeCases))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestHeaderFunctions))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestHeaderComputationFunctions))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestLZ77StreamsEncoderTANSLiterals))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestLZ77EncoderTANSLiterals))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestBenchmarkIntegration))
+    suite.addTests(loader.loadTestsFromTestCase(m.TestEdgeCases))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=verbosity)
@@ -90,31 +65,22 @@ def run_benchmark_tests(verbosity=2):
 
 
 def run_quick_tests(verbosity=2):
-    """Run only quick tests (skip performance tests)"""
     print("=" * 60)
     print("Running Quick Tests Only")
     print("=" * 60)
     
-    # Import test modules (absolute imports for direct execution)
-    from test_tans_lz77_coder import (
-        TestTANSEncoder,
-        TestTANSDecoder,
-        TestTANSEdgeCases,
-    )
-    from test_lz77_tans_benchmark import (
-        TestHeaderFunctions,
-        TestHeaderComputationFunctions,
-    )
+    tans = _import_test_module("test_tans_lz77_coder")
+    bench = _import_test_module("test_lz77_tans_benchmark")
     
-    # Create test suite
+    loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     
     # Add only quick test classes
-    suite.addTest(unittest.makeSuite(TestTANSEncoder))
-    suite.addTest(unittest.makeSuite(TestTANSDecoder))
-    suite.addTest(unittest.makeSuite(TestTANSEdgeCases))
-    suite.addTest(unittest.makeSuite(TestHeaderFunctions))
-    suite.addTest(unittest.makeSuite(TestHeaderComputationFunctions))
+    suite.addTests(loader.loadTestsFromTestCase(tans.TestTANSEncoder))
+    suite.addTests(loader.loadTestsFromTestCase(tans.TestTANSDecoder))
+    suite.addTests(loader.loadTestsFromTestCase(tans.TestTANSEdgeCases))
+    suite.addTests(loader.loadTestsFromTestCase(bench.TestHeaderFunctions))
+    suite.addTests(loader.loadTestsFromTestCase(bench.TestHeaderComputationFunctions))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=verbosity)

@@ -1,40 +1,11 @@
-"""
-tANS (tabled Asymmetric Numeral Systems) implementation for LZ77 entropy coding.
-
-This module provides tANS-based entropy encoding/decoding as a drop-in replacement
-for the `LZ77StreamsEncoder`/`LZ77StreamsDecoder` used in `lz77.py`.
-
-High level:
-- Build a symbol table from empirical frequencies
-- Encode symbols by transitioning through ANS states
-- Decode by reversing the state transitions
-
-The implementation uses native tANS headers with (symbol, frequency) pairs
-for maximum compatibility with standard tANS implementations.
-"""
-
 from collections import Counter
 import math
 
-# Elias-Delta imports removed - using native tANS headers
-from scl.compressors.lz77 import LZ77Sequence
-from scl.compressors.golomb_coder import GolombUintEncoder, GolombUintDecoder
-# DataBlock import removed - not needed for native tANS headers
 from scl.utils.bitarray_utils import BitArray, bitarray_to_uint, uint_to_bitarray
 
 
-# This implementation uses native tANS headers with (symbol, frequency) pairs
-# rather than Elias-Delta compressed count vectors
-
-
-# Note: Elias-Delta encoding functions removed as this implementation
-# uses native tANS header format with (symbol, frequency) pairs
-
-
-# Canonical stream order (bit positions 0..len(_STREAMS)-1)
 _STREAMS = ("literals", "literal_counts", "match_lengths", "match_offsets")
 
-# Header format constants (protocol-level; encoder/decoder must match)
 _COUNT_BITS = 32
 _TABLE_LOG_BITS = 4
 _ENCODING_METHOD_BITS = 1
@@ -50,7 +21,6 @@ _ASCII_WS = set(b" \t\r\n\v\f")
 
 
 def _byte_class(b: int) -> int:
-    # 0=alpha, 1=digit, 2=whitespace, 3=other
     if 65 <= b <= 90 or 97 <= b <= 122:
         return 0
     if 48 <= b <= 57:
@@ -61,7 +31,6 @@ def _byte_class(b: int) -> int:
 
 
 def _can_reuse_freqs(prev: Counter, cur: Counter) -> bool:
-    # Safe reuse requires the previous table to cover all symbols we will encode.
     return set(cur.keys()).issubset(prev.keys())
 
 
@@ -76,30 +45,12 @@ def select_optimal_table_log(
     large_alphabet: int = 256,
     large_n: int = 10000,
 ):
-    """
-    Select optimal table_log for a stream based on alphabet size and symbol count.
-
-    Heuristic:
-    - Small alphabet or few symbols: use smaller table_log (min_table_log)
-    - Large alphabet or many symbols: use larger table_log (max_table_log)
-    - Otherwise: use default_table_log
-
-    Args:
-        symbols: List of symbols to encode
-        min_table_log: Minimum table_log to consider (default 8)
-        max_table_log: Maximum table_log to consider (default 12)
-
-    Returns:
-        Optimal table_log value
-    """
     if not symbols:
         return min_table_log
 
-    # Avoid building a full Counter here; we only need alphabet size.
     alphabet_size = len(set(symbols))
     num_symbols = len(symbols)
 
-    # Ensure the table can represent the alphabet (table_size >= alphabet_size).
     min_feasible = max(0, math.ceil(math.log2(max(1, alphabet_size))))
 
     if alphabet_size < small_alphabet or num_symbols < small_n:
@@ -110,13 +61,6 @@ def select_optimal_table_log(
 
 
 def _normalize_freqs_largest_remainder(freqs: dict, table_size: int, *, min_freq: int = 1) -> dict:
-    """Normalize positive freqs to integer counts summing to table_size (largest remainder).
-
-    Guarantees:
-    - If a symbol appears in freqs, its normalized count is >= min_freq.
-    - Sum of normalized counts is exactly table_size.
-    - Deterministic given freqs (ties broken by symbol id).
-    """
     if not freqs:
         return {}
 
@@ -129,8 +73,8 @@ def _normalize_freqs_largest_remainder(freqs: dict, table_size: int, *, min_freq
     total = sum(freqs[s] for s in symbols)
     scaled = {s: (freqs[s] * table_size) / total for s in symbols}
 
-    base = {}
-    frac = {}
+    base: dict = {}
+    frac: dict = {}
     for s in symbols:
         flo = int(math.floor(scaled[s]))
         base[s] = max(min_freq, flo)
@@ -138,15 +82,12 @@ def _normalize_freqs_largest_remainder(freqs: dict, table_size: int, *, min_freq
 
     cur = sum(base.values())
     if cur < table_size:
-        # Add 1 to the largest fractional parts until we hit table_size.
         for s in sorted(symbols, key=lambda x: (frac[x], freqs[x], x), reverse=True)[: table_size - cur]:
             base[s] += 1
     elif cur > table_size:
-        # Remove 1 from the smallest fractional parts (only where > min_freq) until we hit table_size.
         need = cur - table_size
         candidates = [s for s in symbols if base[s] > min_freq]
         if need > len(candidates) * (max(base[s] for s in candidates) - min_freq if candidates else 0):
-            # Conservative guard; should not happen unless inputs are pathological.
             raise ValueError("Could not renormalize to requested table_size without violating min_freq")
 
         for s in sorted(candidates, key=lambda x: (frac[x], freqs[x], x)):
@@ -161,68 +102,21 @@ def _normalize_freqs_largest_remainder(freqs: dict, table_size: int, *, min_freq
     return base
 
 
-def _freqs_close_enough(
-    prev_freqs: Counter,
-    cur_freqs: Counter,
-    *,
-    min_samples: int,
-    max_rel_l1: float,
-) -> bool:
-    """Return True if two empirical distributions are close enough to reuse the previous table.
-
-    Uses relative L1 distance between probability vectors:
-        0.5 * sum_s |p(s) - q(s)| <= max_rel_l1
-    """
-    prev_n = sum(prev_freqs.values())
-    cur_n = sum(cur_freqs.values())
-    if prev_n < min_samples or cur_n < min_samples:
-        return False
-
-    keys = set(prev_freqs.keys()) | set(cur_freqs.keys())
-    if not keys:
-        return True
-
-    l1 = 0.0
-    for k in keys:
-        l1 += abs((prev_freqs.get(k, 0) / prev_n) - (cur_freqs.get(k, 0) / cur_n))
-    return 0.5 * l1 <= max_rel_l1
-
-
 class TANSEncoder:
-    """
-    tANS encoder implementing tabled Asymmetric Numeral Systems.
-
-    Parameters:
-    - table_log: Log2 of table size (table_size = 2^table_log)
-                 Larger values give better compression but use more memory
-                 Typical values: 8-12
-    """
-
     def __init__(self, table_log=10):
         self.table_log = table_log
-        self.table_size = 1 << table_log  # 2^table_log
+        self.table_size = 1 << table_log
         self.table = None
         self.symbol_info = None
 
     def build_table(self, freqs):
-        """
-        Build the tANS encoding table from symbol frequencies.
-
-        Args:
-        - freqs: Dictionary mapping symbols to their frequencies
-
-        Returns:
-        - table: Encoding table with state transition info
-        - symbol_info: Info needed for encoding each symbol
-        """
         if not freqs:
+            self.table = None
+            self.symbol_info = None
             return None, None
 
         symbols = sorted(freqs.keys())
         normalized_freqs = _normalize_freqs_largest_remainder(freqs, self.table_size, min_freq=1)
-
-        # Build the state table
-        # table[state] = (symbol, next_state_base, num_bits_to_output)
         table = [None] * self.table_size
         symbol_info = {}
 
@@ -230,8 +124,8 @@ class TANSEncoder:
         for sym in symbols:
             num_states = normalized_freqs[sym]
             symbol_info[sym] = {
-                'start': position,
-                'freq': num_states
+                "start": position,
+                "freq": num_states,
             }
 
             for i in range(num_states):
@@ -244,88 +138,45 @@ class TANSEncoder:
         return table, symbol_info
 
     def encode_symbol(self, state, symbol, cumul_freq):
-        """
-        Encode a single symbol and update the state.
-
-        Args:
-        - state: Current ANS state
-        - symbol: Symbol to encode
-        - cumul_freq: Cumulative frequency mapping for symbols
-
-        Returns:
-        - new_state: Updated state after encoding
-        - bits_to_output: BitArray of bits to write to the stream
-        """
         if symbol not in self.symbol_info:
             raise ValueError(f"Symbol {symbol} not in frequency table")
-
-        freq = self.symbol_info[symbol]['freq']
-
-        # Renormalization: output bits if state is too large
+        
+        freq = self.symbol_info[symbol]["freq"]
+        
         bits_list = []
         threshold = freq * self.table_size
         while state >= threshold:
-            # Output lower table_log bits
             bits_list.append(uint_to_bitarray(state & ((1 << self.table_log) - 1), self.table_log))
             state >>= self.table_log
-
-        # State transition (TRUE tANS formula)
         slot = state % freq
         new_state = cumul_freq[symbol] + slot + (state // freq) * self.table_size
 
-        # Combine all output bits
-        bits_to_output = sum(reversed(bits_list), BitArray())
-
+        bits_to_output = BitArray()
+        for chunk in reversed(bits_list):
+            bits_to_output += chunk
         return new_state, bits_to_output
 
-    def encode(self, symbols, freqs: Counter = None):
-        """
-        Encode a sequence of symbols using TRUE tANS algorithm.
-
-        Args:
-        - symbols: List of symbols to encode
-
-        Returns:
-        - BitArray with encoded data (NO HEADERS - those are added by caller)
-        """
+    def encode(self, symbols, freqs: Counter = None, *, rebuild_table: bool = True):
         if not symbols:
-            return BitArray([])
+            return BitArray()
 
-        # Build table from provided freqs (for table reuse) or from empirical freqs.
-        freqs = Counter(symbols) if freqs is None else freqs
-        self.build_table(freqs)
+        if rebuild_table or self.symbol_info is None:
+            freqs = Counter(symbols) if freqs is None else freqs
+            self.build_table(freqs)
 
-        # Build cumulative frequency mapping
-        cumul_freq = {}
-        for sym, info in self.symbol_info.items():
-            cumul_freq[sym] = info['start']
+        cumul_freq = {sym: info["start"] for sym, info in self.symbol_info.items()}
 
-        # Initialize state
         state = self.table_size
-        all_bits = BitArray()
-
-        # Process symbols in REVERSE order (tANS property)
+        out_bits = BitArray()
         for sym in reversed(symbols):
-            if sym not in self.symbol_info:
+            if sym not in self.symbol_info:  # only possible with rebuild_table=False
                 continue
-
-            # Encode single symbol using the dedicated method
             state, bits_output = self.encode_symbol(state, sym, cumul_freq)
-            all_bits = bits_output + all_bits  # Prepend bits (reverse order)
-
-        # Layout: [final_state] + [bitstream]
-        result = BitArray()
-        result += uint_to_bitarray(state, _TANS_STATE_BITS)
-        result += all_bits
-
-        return result
+            out_bits = bits_output + out_bits
+        return uint_to_bitarray(state, _TANS_STATE_BITS) + out_bits
 
 
 class TANSDecoder:
-    """
-    tANS decoder - reverses the encoding process.
-    """
-
     def __init__(self, table_log=10):
         self.table_log = table_log
         self.table_size = 1 << table_log
@@ -333,57 +184,35 @@ class TANSDecoder:
         self.symbol_info = None
 
     def build_table(self, freqs):
-        """Build decoding table from frequencies (same as encoder)."""
         encoder = TANSEncoder(self.table_log)
         self.table, self.symbol_info = encoder.build_table(freqs)
 
     def decode(self, bitarray, num_symbols, freqs):
-        """
-        Decode a bitarray back to symbols using TRUE tANS algorithm.
-
-        Args:
-        - bitarray: Encoded BitArray (format: [final_state][bitstream])
-        - num_symbols: Number of symbols to decode
-        - freqs: Frequency dictionary (needed to rebuild table)
-
-        Returns:
-        - (symbols, bits_consumed): list of decoded symbols and bits consumed
-        """
         if num_symbols == 0:
             return [], 0
 
         self.build_table(freqs)
 
-        # Read final state
         state = bitarray_to_uint(bitarray[0:_TANS_STATE_BITS])
         bits = bitarray[_TANS_STATE_BITS:]
 
-        # Rebuild cumul_freq and freq from symbol_info
-        cumul_freq = {}
-        freq = {}
-        for sym, info in self.symbol_info.items():
-            cumul_freq[sym] = info['start']
-            freq[sym] = info['freq']
-
-        # Decode symbols
+        cumul_freq = {sym: info["start"] for sym, info in self.symbol_info.items()}
+        freq = {sym: info["freq"] for sym, info in self.symbol_info.items()}
         bit_pos = 0
         symbols = []
 
         for _ in range(num_symbols):
-            # Get symbol from current state
             slot = state % self.table_size
             if slot >= len(self.table):
                 break
             sym = self.table[slot]
             symbols.append(sym)
 
-            # Recover previous state (TRUE tANS formula)
             slot_in_sym = (slot - cumul_freq[sym]) % freq[sym]
             quot = (state - slot) // self.table_size
             prev_state = quot * freq[sym] + slot_in_sym
             state = prev_state
 
-            # Renormalize: read bits if state is too small
             while state < self.table_size and bit_pos + self.table_log <= len(bits):
                 new_bits = bitarray_to_uint(bits[bit_pos:bit_pos + self.table_log])
                 state = (state << self.table_log) | new_bits
@@ -391,7 +220,6 @@ class TANSDecoder:
 
         bits_consumed = _TANS_STATE_BITS + bit_pos
         return symbols, bits_consumed
-
 class LZ77TANSStreamsEncoder:
     """
     Replacement for LZ77StreamsEncoder using tANS instead of the original entropy coder.

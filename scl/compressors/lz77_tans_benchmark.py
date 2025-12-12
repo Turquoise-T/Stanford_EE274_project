@@ -1,38 +1,3 @@
-"""
-Benchmark script for real-world system comparison: LZ77 + tANS vs LZ77 + Huffman
-
-Usage:
-    python lz77_tans_benchmark.py -i path/to/file1 path/to/file2 ...
-    python lz77_tans_benchmark.py -i path/to/file1 --table_log 8 10 12
-
-DESIGN PHILOSOPHY:
-  This script uses a HYBRID tANS design for fair comparison:
-    - Header: Same Elias-Delta compressed counts format as empirical Huffman baseline
-    - Payload: Pure tANS encoding [final_state][bitstream]
-  
-  This allows apples-to-apples comparison: same header overhead, only the entropy
-  coder (Huffman vs tANS) differs. This isolates the payload coding efficiency.
-  
-  NOTE: For a full native table-based tANS implementation with its own header
-  format, see tans_lz77_coder.py::LZ77TANSStreamsEncoder (which uses explicit
-  frequency tables in the header).
-
-This script performs a complete system-level comparison:
-  1. Compresses files with:
-        - Baseline: LZ77 + Empirical Huffman
-        - Test: LZ77 + tANS (literals only, hybrid header design)
-  
-  2. Reports 4 key metrics:
-        - Bitrate (bits per byte): Overall compression efficiency
-        - Header Size: Actual header overhead in bytes
-        - Total Size: Complete compressed size
-        - Ratio: Compressed/Raw ratio
-  
-  3. Header format (shared by both baseline and tANS):
-        - Format: [32 bits: size_of_counts_encoding] + [Elias-Delta(counts[0..255])]
-        - This ensures fair comparison: same model overhead, different payload coding
-"""
-
 import argparse
 import os
 import tempfile
@@ -61,28 +26,15 @@ from scl.utils.bitarray_utils import BitArray, uint_to_bitarray, bitarray_to_uin
 from scl.utils.test_utils import try_file_lossless_compression
 
 # Import tANS implementation
-from tans_lz77_coder import (
-    TANSEncoder,
-    TANSDecoder,
-    LZ77TANSStreamsEncoder,
-    LZ77TANSStreamsDecoder,
-)
+try:
+    from scl.compressors.tans_lz77_coder import TANSEncoder, TANSDecoder
+except ImportError:
+    from tans_lz77_coder import TANSEncoder, TANSDecoder
 
 ENCODED_BLOCK_SIZE_HEADER_BITS = 32  # Same as canonical Huffman
 
 
-# ---------------------------------------------------------------------------
-# tANS-based log-scale-binned integer encoder/decoder
-# (for literal_count, match_length, match_offset streams).
-# ---------------------------------------------------------------------------
-
-
 class TANSLogScaleBinnedIntegerEncoder(DataEncoder):
-    """
-    Similar to LogScaleBinnedIntegerEncoder, but uses TANSEncoder
-    for the binned integers instead of EmpiricalIntHuffmanEncoder.
-    """
-
     def __init__(self, offset: int = 0, max_num_bins: int = 32, table_log: int = 10):
         self.offset = offset
         self.max_num_bins = max_num_bins + self.offset
@@ -112,25 +64,20 @@ class TANSLogScaleBinnedIntegerEncoder(DataEncoder):
                 residuals.append(val_plus_1 - 2**log_val_plus_1)
                 residual_num_bits.append(log_val_plus_1)
 
-        # Encode bins with tANS
         bins_encoding = self.tans_encoder.encode(bins)
 
-        # Store frequency table for decoder
         freqs = Counter(bins)
         freq_encoding = self._encode_frequencies(freqs)
 
-        # Encode residuals as raw bits
         residuals_encoding = BitArray()
         for residual, num_bits in zip(residuals, residual_num_bits):
             if num_bits == 0:
                 continue
             residuals_encoding += uint_to_bitarray(residual, num_bits)
 
-        # Format: [freq_table] + [bins_encoding] + [residuals]
         return freq_encoding + bins_encoding + residuals_encoding
 
     def _encode_frequencies(self, freqs: dict) -> BitArray:
-        """Encode frequency table for decoder."""
         result = uint_to_bitarray(len(freqs), 16)
         for sym, freq in sorted(freqs.items()):
             result += uint_to_bitarray(sym, 32)
@@ -139,10 +86,6 @@ class TANSLogScaleBinnedIntegerEncoder(DataEncoder):
 
 
 class TANSLogScaleBinnedIntegerDecoder(DataDecoder):
-    """
-    Decoder for TANSLogScaleBinnedIntegerEncoder.
-    """
-
     def __init__(self, offset: int = 0, max_num_bins: int = 32, table_log: int = 10):
         self.offset = offset
         self.max_num_bins = max_num_bins + self.offset
@@ -150,30 +93,20 @@ class TANSLogScaleBinnedIntegerDecoder(DataDecoder):
         self.tans_decoder = TANSDecoder(table_log=table_log)
 
     def decode_block(self, encoded_bitarray: BitArray):
-        # Decode frequency table
         freqs, bits_consumed = self._decode_frequencies(encoded_bitarray)
         encoded_bitarray = encoded_bitarray[bits_consumed:]
 
-        # Decode bins with tANS
-        # Note: We need to know how many symbols to decode
-        # This is stored implicitly in the total count of frequencies
         num_symbols = sum(freqs.values())
-        bins_decoded, _ = self.tans_decoder.decode(
-            encoded_bitarray, num_symbols, freqs
-        )
-
-        # Find where tANS encoding ends (simplified - need better stream delimiting)
-        # For now, we'll track bits consumed during decode
-        # This is a limitation of the current tANS implementation
+        bins_decoded, bins_bits_used = self.tans_decoder.decode(encoded_bitarray, num_symbols, freqs)
+        encoded_bitarray = encoded_bitarray[bins_bits_used:]
 
         decoded: List[int] = []
-        bit_position = 0  # Track position in remaining bitarray
+        bit_position = 0
 
         for encoded_bin in bins_decoded:
             if encoded_bin < self.offset:
                 decoded.append(encoded_bin)
             else:
-                # Undo the log-scale binning
                 encoded_bin_minus_offset = encoded_bin - self.offset
                 log_val_plus_1 = encoded_bin_minus_offset
                 num_bits = log_val_plus_1
@@ -181,18 +114,15 @@ class TANSLogScaleBinnedIntegerDecoder(DataDecoder):
                 if num_bits == 0:
                     residual = 0
                 else:
-                    # Read residual from the remaining stream
-                    # This requires knowing where bins encoding ends
-                    # Simplified: assume we can access residuals correctly
-                    residual = 0  # Placeholder
+                    residual = bitarray_to_uint(encoded_bitarray[bit_position : bit_position + num_bits])
+                    bit_position += num_bits
 
                 decoded_val = self.offset + 2**log_val_plus_1 + residual - 1
                 decoded.append(decoded_val)
 
-        return DataBlock(decoded), bits_consumed
+        return DataBlock(decoded), bits_consumed + bins_bits_used + bit_position
 
     def _decode_frequencies(self, encoded_bitarray: BitArray) -> Tuple[dict, int]:
-        """Decode frequency table."""
         num_unique = bitarray_to_uint(encoded_bitarray[0:16])
         bit_pos = 16
         freqs = {}
@@ -205,21 +135,13 @@ class TANSLogScaleBinnedIntegerDecoder(DataDecoder):
         return freqs, bit_pos
 
 
-# ---------------------------------------------------------------------------
-# Helpers for literal counts header (shared by empirical Huffman and tANS)
-# ---------------------------------------------------------------------------
-
-
 def _build_literal_counts_list(literals: List[int]) -> List[int]:
-    """Return a length-256 count vector for literal bytes."""
     counts = Counter(literals)
     return [counts.get(i, 0) for i in range(256)]
 
 
 def _encode_literal_counts_header_from_counts(counts_list: List[int]) -> BitArray:
-    """Encode counts header: [32 bits size] + [Elias–Delta(counts_list)]."""
     if not any(counts_list):
-        # Mirror EmpiricalIntHuffmanEncoder behavior for empty streams.
         return uint_to_bitarray(0, ENCODED_BLOCK_SIZE_HEADER_BITS)
 
     counts_encoding = EliasDeltaUintEncoder().encode_block(DataBlock(counts_list))
@@ -230,14 +152,6 @@ def _encode_literal_counts_header_from_counts(counts_list: List[int]) -> BitArra
 
 
 def _decode_literal_counts_header(encoded_bitarray: BitArray) -> Tuple[dict, int, int]:
-    """
-    Decode counts header produced by `_encode_literal_counts_header_from_counts`.
-
-    Returns:
-        freqs (dict): symbol -> count (only symbols with count > 0)
-        num_literals (int): total number of literals
-        bits_consumed (int): number of bits consumed from encoded_bitarray
-    """
     counts_encoding_size = bitarray_to_uint(
         encoded_bitarray[0:ENCODED_BLOCK_SIZE_HEADER_BITS]
     )
@@ -252,7 +166,6 @@ def _decode_literal_counts_header(encoded_bitarray: BitArray) -> Tuple[dict, int
     assert num_bits_counts == counts_encoding_size
 
     counts_list = counts_block.data_list
-    # For literals, we expect a full 256-entry vector.
     assert len(counts_list) == 256
 
     freqs = {i: c for i, c in enumerate(counts_list) if c > 0}
@@ -262,49 +175,16 @@ def _decode_literal_counts_header(encoded_bitarray: BitArray) -> Tuple[dict, int
     return freqs, num_literals, bit_pos
 
 
-# ---------------------------------------------------------------------------
-# tANS LZ77 streams: literals only, and "all" streams.
-# ---------------------------------------------------------------------------
-
-
 class LZ77StreamsEncoderTANSLiterals(LZ77StreamsEncoder):
-    """LZ77StreamsEncoder variant that uses tANS for literals.
-
-    This is a HYBRID design: it uses the SAME header format as empirical Huffman
-    (Elias-Delta compressed count vector) for fair comparison, but the payload
-    uses tANS encoding instead of Huffman.
-
-    Literal counts, match lengths, and match offsets are encoded exactly
-    as in the baseline implementation (log-scale binned integers with empirical Huffman),
-    but literals (byte values 0..255) use TANSEncoder for the payload only.
-
-    Note: For a full native tANS implementation with table-based headers, see
-    tans_lz77_coder.py::LZ77TANSStreamsEncoder.
-    """
-
     def __init__(self, table_log: int = 10):
         super().__init__()
         self.table_log = table_log
 
     def encode_literals(self, literals: List[int]) -> BitArray:
-        """Encode literals using tANS with a compact counts header.
-
-        Layout (HYBRID design - shared header, tANS payload):
-            [Elias-Delta counts header] + [tANS payload]
-
-        Header format (matches empirical Huffman baseline):
-            [32 bits: size_of_counts_encoding] + [Elias–Delta(counts[0..255])]
-        
-        Payload format (pure tANS):
-            [32 bits: final_state] + [bitstream]
-        
-        This design allows fair comparison: same header overhead, different payload coding.
-        """
         counts_list = _build_literal_counts_list(literals)
         header = _encode_literal_counts_header_from_counts(counts_list)
 
         if not literals:
-            # No payload when there are no literals.
             return header
 
         encoder = TANSEncoder(table_log=self.table_log)
@@ -314,29 +194,16 @@ class LZ77StreamsEncoderTANSLiterals(LZ77StreamsEncoder):
 
 
 class LZ77StreamsDecoderTANSLiterals(LZ77StreamsDecoder):
-    """Decoder matching LZ77StreamsEncoderTANSLiterals.
-    
-    Uses HYBRID design: decodes Elias-Delta counts header (same as Huffman baseline)
-    followed by pure tANS payload [final_state][bitstream].
-    """
-
     def __init__(self, table_log: int = 10):
         super().__init__()
         self.table_log = table_log
 
     def decode_literals(self, encoded_bitarray: BitArray) -> Tuple[List[int], int]:
-        """Decode literals using tANS and the compact counts header.
-        
-        Layout (HYBRID design - shared header, tANS payload):
-            Header: Elias-Delta(counts[0..255]) format (matches Huffman baseline)
-            Payload: Pure tANS [final_state][bitstream]
-        """
         freqs, num_literals, bit_pos = _decode_literal_counts_header(encoded_bitarray)
 
         if num_literals == 0:
             return [], bit_pos
 
-        # Decode literals with tANS
         decoder = TANSDecoder(table_log=self.table_log)
         payload = encoded_bitarray[bit_pos:]
         literals, bits_used = decoder.decode(payload, num_literals, freqs)
@@ -346,8 +213,6 @@ class LZ77StreamsDecoderTANSLiterals(LZ77StreamsDecoder):
 
 
 class LZ77EncoderTANSLiterals(LZ77Encoder):
-    """LZ77 encoder with tANS for literals only."""
-
     def __init__(
         self,
         min_match_length: int = DEFAULT_MIN_MATCH_LEN,
@@ -360,47 +225,27 @@ class LZ77EncoderTANSLiterals(LZ77Encoder):
             max_num_matches_considered=max_num_matches_considered,
             initial_window=initial_window,
         )
-        # Use baseline LZ77 streams encoder with tANS only for literals.
         self.streams_encoder = LZ77StreamsEncoderTANSLiterals(table_log=table_log)
 
 
 class LZ77DecoderTANSLiterals(LZ77Decoder):
-    """LZ77 decoder matching LZ77EncoderTANSLiterals."""
-
     def __init__(self, initial_window: List[int] = None, table_log: int = 10):
         super().__init__(initial_window=initial_window)
-        # Matching streams decoder that uses tANS only for literals.
         self.streams_decoder = LZ77StreamsDecoderTANSLiterals(table_log=table_log)
 
 
 class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
-    """LZ77StreamsEncoder variant that uses tANS for all streams (BENCHMARK-LOCAL).
-    
-    This is a benchmark-specific variant that uses tANS for:
-        - literal_count
-        - match_length
-        - match_offset
-        - literals (with hybrid header: Elias-Delta counts + tANS payload)
-    
-    NOTE: This is distinct from tans_lz77_coder.py::LZ77TANSStreamsEncoder, which
-    uses a full native tANS implementation with table-based headers. This benchmark
-    variant uses hybrid headers for literals to maintain fair comparison.
-    """
-
     def __init__(self, table_log: int = 10):
         super().__init__()
         self.table_log = table_log
 
     def encode_lz77_sequences(self, lz77_sequences):
-        """Encode all LZ77 sequence components with tANS."""
         encoded_bitarray = BitArray()
 
-        # Extract components
         literal_counts = [seq.literal_count for seq in lz77_sequences]
         match_lengths = [seq.match_length for seq in lz77_sequences]
         match_offsets = [seq.match_offset for seq in lz77_sequences]
 
-        # Encode each stream
         for data_list in [literal_counts, match_lengths, match_offsets]:
             if not data_list:
                 encoded_bitarray += uint_to_bitarray(0, 32)
@@ -419,7 +264,6 @@ class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
         return encoded_bitarray
 
     def _encode_frequencies(self, freqs: dict) -> BitArray:
-        """Encode frequency table for decoder (integer streams)."""
         result = uint_to_bitarray(len(freqs), 16)
         for sym, freq in sorted(freqs.items()):
             result += uint_to_bitarray(sym, 32)
@@ -427,11 +271,6 @@ class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
         return result
 
     def encode_literals(self, literals: List[int]) -> BitArray:
-        """Encode literals using tANS with the same compact counts header.
-        
-        Uses HYBRID design: Elias-Delta header (same as baseline) + tANS payload.
-        See LZ77StreamsEncoderTANSLiterals.encode_literals for detailed format.
-        """
         counts_list = _build_literal_counts_list(literals)
         header = _encode_literal_counts_header_from_counts(counts_list)
 
@@ -445,17 +284,11 @@ class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
 
 
 class LZ77StreamsDecoderTANSAll(LZ77StreamsDecoder):
-    """Decoder matching LZ77StreamsEncoderTANSAll (BENCHMARK-LOCAL variant).
-    
-    See LZ77StreamsEncoderTANSAll docstring for distinction from native tANS implementation.
-    """
-
     def __init__(self, table_log: int = 10):
         super().__init__()
         self.table_log = table_log
 
     def _decode_frequencies(self, encoded_bitarray: BitArray) -> Tuple[dict, int]:
-        """Decode frequency table for integer streams (matches encoder format)."""
         num_unique = bitarray_to_uint(encoded_bitarray[0:16])
         bit_pos = 16
         freqs = {}
@@ -468,11 +301,10 @@ class LZ77StreamsDecoderTANSAll(LZ77StreamsDecoder):
         return freqs, bit_pos
 
     def decode_lz77_sequences(self, encoded_bitarray: BitArray):
-        """Decode all LZ77 sequence components with tANS."""
         bit_pos = 0
         decoded_lists = []
 
-        for _ in range(3):  # literal_counts, match_lengths, match_offsets
+        for _ in range(3):
             num_items = bitarray_to_uint(encoded_bitarray[bit_pos : bit_pos + 32])
             bit_pos += 32
 
@@ -499,7 +331,6 @@ class LZ77StreamsDecoderTANSAll(LZ77StreamsDecoder):
         return lz77_sequences, bit_pos
 
     def decode_literals(self, encoded_bitarray: BitArray):
-        """Decode literals using tANS and the compact counts header."""
         freqs, num_literals, bit_pos = _decode_literal_counts_header(encoded_bitarray)
 
         if num_literals == 0:
@@ -514,8 +345,6 @@ class LZ77StreamsDecoderTANSAll(LZ77StreamsDecoder):
 
 
 class LZ77EncoderTANSAll(LZ77Encoder):
-    """LZ77 encoder with tANS for all LZ77 streams."""
-
     def __init__(
         self,
         min_match_length: int = DEFAULT_MIN_MATCH_LEN,
@@ -532,25 +361,11 @@ class LZ77EncoderTANSAll(LZ77Encoder):
 
 
 class LZ77DecoderTANSAll(LZ77Decoder):
-    """LZ77 decoder matching LZ77EncoderTANSAll."""
-
     def __init__(self, initial_window: List[int] = None, table_log: int = 10):
         super().__init__(initial_window=initial_window)
         self.streams_decoder = LZ77StreamsDecoderTANSAll(table_log=table_log)
 
-
-# ---------------------------------------------------------------------------
-# Header overhead computation for literals
-# ---------------------------------------------------------------------------
-
-
 def compute_literal_header_bits_empirical(literals: List[int]) -> int:
-    """Compute model header bits for empirical Huffman on literals.
-
-    We mirror EmpiricalIntHuffmanEncoder's behavior but only count the
-    model overhead:
-        [32 bits: size_of_counts_encoding] + [counts_encoding_bits]
-    """
     if not literals:
         return ENCODED_BLOCK_SIZE_HEADER_BITS
 
@@ -560,23 +375,6 @@ def compute_literal_header_bits_empirical(literals: List[int]) -> int:
 
 
 def compute_literal_header_bits_tans(literals: List[int], table_log: int) -> int:
-    """Compute tANS header bits for literals.
-
-    IMPORTANT: This function computes the header size for the HYBRID tANS design used
-    in this benchmark, which uses the SAME Elias-Delta compressed counts header format
-    as the empirical Huffman baseline (for fair comparison). Only the payload uses
-    tANS encoding.
-
-    Header format (matches empirical Huffman):
-        [32 bits: size_of_counts_encoding] + [Elias-Delta(counts[0..255])]
-    
-    Note: The table_log parameter is kept for API compatibility but is not used
-    in header size calculation, as the header format is independent of table_log.
-
-    For native table-based tANS headers (as in tans_lz77_coder.py), see:
-        [32 bits: num_literals] + [16 bits: num_unique] + 
-        [num_unique * (16 + 32): (symbol, frequency) pairs]
-    """
     if not literals:
         return ENCODED_BLOCK_SIZE_HEADER_BITS
     return len(_encode_literal_counts_header_from_counts(_build_literal_counts_list(literals)))
