@@ -1,5 +1,6 @@
 # canonical_huffman_code.py
 The implemention for canonical_huffman_code
+<<<<<<< HEAD
 ## Overview
 Canonical Huffman coding is an optimized variant of Huffman coding that minimizes header sizes by only storing the code lengths rather than the full code tree. The decoder reconstructs the tree based on the code lengths during decoding, making it more efficient for space-constrained environments.
 
@@ -35,12 +36,15 @@ decoded, _ = decoder.decode_block(encoded)
 
 # Check if the decoded data matches the original
 assert decoded.data_list == data
+=======
+>>>>>>> 76e716b5e553c1a5ec4d50353d6054d86dde3239
 
 # lz77_canonical_benchmark.py
 The test file for baseline compared with canonical_huffman_code
 
 # How to run the code
 Go to compressors folder and run the following commend
+<<<<<<< HEAD
 ```
 
 ## Canonical Huffman Coding - Unit Tests
@@ -65,3 +69,8 @@ python lz77_canonical_benchmark.py -i ../testfiles/big.txt
 ```shell
 python lz77_canonical_benchmark.py --data-folder ../testfiles/data/
 ```
+=======
+```shell
+python lz77_canonical_benchmark.py -i ../testfiles/big.txt
+``` 
+>>>>>>> 76e716b5e553c1a5ec4d50353d6054d86dde3239

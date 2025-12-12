@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """Test LZ77TANSStreamsEncoder and LZ77TANSStreamsDecoder"""
 import sys
-sys.path.insert(0, '/Users/jiayuchang/Desktop/Stanford/ee274/ee274_LZ77 ')
 
 from scl.compressors.tans_lz77_coder import LZ77TANSStreamsEncoder, LZ77TANSStreamsDecoder
 from scl.compressors.lz77 import LZ77Sequence
@@ -31,7 +30,6 @@ print(f"  Literals as text: {literals.decode('ascii', errors='ignore')}")
 
 # Encode
 print("\n[2] Encoding with LZ77TANSStreamsEncoder...")
-encoder = LZ77TANSStreamsEncoder(table_log=10)
 try:
     encoded = encoder.encode_block(lz77_sequences, literals)
     print(f"  ✓ Encoded successfully: {len(encoded)} bits")
@@ -88,6 +86,5 @@ else:
         print(f"    Decoded text:  {decoded_literals.decode('ascii', errors='ignore')}")
 
 print("\n" + "="*70)
-print("Test complete!")
 print("="*70)
 
