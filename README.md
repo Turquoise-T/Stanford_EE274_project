@@ -44,15 +44,6 @@ python -m scl.compressors.lz77_tans_benchmark \
   -t 8 10 12 --suite_out "results_tans.md" --suite_csv_out "results_tans.csv"
 ```
 
-### Programmatic Use
-
-Complete LZ77+tANS (all streams) via `LZ77TANSStreamsEncoder/Decoder` classes in `scl/compressors/tans_lz77_coder.py`:
-
-```python
-from scl.compressors.tans_lz77_coder import LZ77TANSStreamsEncoder, LZ77TANSStreamsDecoder
-# Use encoder/decoder classes directly
-```
-
 ## Project Files
 
 - `scl/compressors/lz77.py` - Base LZ77 with empirical Huffman
