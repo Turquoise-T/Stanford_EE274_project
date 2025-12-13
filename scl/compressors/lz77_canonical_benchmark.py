@@ -45,17 +45,14 @@ from canonical_huffman_code import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Canonical version of log-scale binned encoder
-# ---------------------------------------------------------------------------
-
 
 class CanonicalLogScaleBinnedIntegerEncoder(DataEncoder):
     """LogScaleBinned but with canonical Huffman for the bins."""
 
     def __init__(self, offset: int = 0, max_num_bins: int = 32):
-        self.offset = offset
-        self.max_num_bins = max_num_bins + self.offset
+        self.offset = offset  # Values below this threshold are stored directly
+        self.max_num_bins = max_num_bins + self.offset  # Total number of bins including offset
+        # Use canonical Huffman to encode bin indices (more compact headers)
         self.canonical_huffman_encoder = CanonicalIntHuffmanEncoder(
             alphabet_size=self.max_num_bins
         )
@@ -63,36 +60,42 @@ class CanonicalLogScaleBinnedIntegerEncoder(DataEncoder):
     def encode_block(self, data_block: DataBlock) -> BitArray:
         import math
 
-        bins: List[int] = []
-        residuals: List[int] = []
-        residual_num_bits: List[int] = []
+        # Log-scale binning: map large integers to (bin_index, residual) pairs
+        bins: List[int] = []  # Bin indices for canonical Huffman encoding
+        residuals: List[int] = []  # Residual values for fixed-width encoding
+        residual_num_bits: List[int] = []  # Number of bits needed for each residual
 
         for val in data_block.data_list:
-            assert val >= 0
+            assert val >= 0  # Only non-negative integers supported
             if val < self.offset:
+                # Small values: store directly as bin index
                 bins.append(val)
             else:
+                # Large values: use log-scale binning
                 val_minus_offset = val - self.offset
-                val_plus_1 = val_minus_offset + 1
-                log_val_plus_1 = int(math.log2(val_plus_1))
+                val_plus_1 = val_minus_offset + 1  # Avoid log(0)
+                log_val_plus_1 = int(math.log2(val_plus_1))  # Determine bin index
                 if log_val_plus_1 >= self.max_num_bins:
                     raise ValueError(
                         f"Value {val} is too large to be encoded with {self.max_num_bins} bins"
                     )
-                bins.append(log_val_plus_1 + self.offset)
-                residuals.append(val_plus_1 - 2**log_val_plus_1)
-                residual_num_bits.append(log_val_plus_1)
+                bins.append(log_val_plus_1 + self.offset)  # Store bin index
+                residuals.append(val_plus_1 - 2**log_val_plus_1)  # Store remainder
+                residual_num_bits.append(log_val_plus_1)  # Track bits needed
 
+        # Encode bin indices using canonical Huffman (compact header)
         bins_encoding = self.canonical_huffman_encoder.encode_block(DataBlock(bins))
 
         from scl.utils.bitarray_utils import uint_to_bitarray
 
+        # Encode residuals using fixed-width encoding
         residuals_encoding = BitArray()
         for residual, num_bits in zip(residuals, residual_num_bits):
-            if num_bits == 0:
+            if num_bits == 0:  # No residual needed for smallest values in each bin
                 continue
             residuals_encoding += uint_to_bitarray(residual, num_bits)
 
+        # Format: [canonical_huffman_bins][fixed_width_residuals]
         return bins_encoding + residuals_encoding
 
 
@@ -108,28 +111,34 @@ class CanonicalLogScaleBinnedIntegerDecoder(DataDecoder):
     def decode_block(self, encoded_bitarray: BitArray):
         from scl.utils.bitarray_utils import bitarray_to_uint
 
+        # First, decode bin indices using canonical Huffman
         bins_decoded, num_bits_consumed = self.canonical_huffman_decoder.decode_block(
             encoded_bitarray
         )
-        bins_decoded = bins_decoded.data_list
-        encoded_bitarray = encoded_bitarray[num_bits_consumed:]
+        bins_decoded = bins_decoded.data_list  # Extract list from DataBlock
+        encoded_bitarray = encoded_bitarray[num_bits_consumed:]  # Skip consumed bits
 
+        # Reconstruct original values from (bin_index, residual) pairs
         decoded: List[int] = []
         for encoded_bin in bins_decoded:
             if encoded_bin < self.offset:
+                # Small values: stored directly as bin index
                 decoded.append(encoded_bin)
             else:
+                # Large values: reconstruct from bin index and residual
                 encoded_bin_minus_offset = encoded_bin - self.offset
-                log_val_plus_1 = encoded_bin_minus_offset
-                num_bits = log_val_plus_1
+                log_val_plus_1 = encoded_bin_minus_offset  # This is the log value
+                num_bits = log_val_plus_1  # Number of bits for residual
 
                 if num_bits == 0:
-                    residual = 0
+                    residual = 0  # No residual for smallest value in bin
                 else:
+                    # Read residual from fixed-width encoding
                     residual = bitarray_to_uint(encoded_bitarray[:num_bits])
 
-                num_bits_consumed += num_bits
-                encoded_bitarray = encoded_bitarray[num_bits:]
+                num_bits_consumed += num_bits  # Track total bits consumed
+                encoded_bitarray = encoded_bitarray[num_bits:]  # Advance bit position
+
 
                 decoded_val = self.offset + 2**log_val_plus_1 + residual - 1
                 decoded.append(decoded_val)
@@ -137,9 +146,6 @@ class CanonicalLogScaleBinnedIntegerDecoder(DataDecoder):
         return DataBlock(decoded), num_bits_consumed
 
 
-# ---------------------------------------------------------------------------
-# LZ77 variants: canonical for literals only, or for everything
-# ---------------------------------------------------------------------------
 
 
 class LZ77StreamsEncoderCanonicalLiterals(LZ77StreamsEncoder):
@@ -185,16 +191,21 @@ class LZ77StreamsEncoderCanonicalAll(LZ77StreamsEncoder):
     """Use canonical Huffman for all LZ77 streams."""
 
     def encode_lz77_sequences(self, lz77_sequences):
+        # Use canonical Huffman for all LZ77 sequence streams
         coder = CanonicalLogScaleBinnedIntegerEncoder(
             offset=self.log_scale_binned_coder_offset
         )
         encoded_bitarray = BitArray()
+        
+        # Encode literal counts (how many literals before each match)
         encoded_bitarray += coder.encode_block(
             DataBlock([l.literal_count for l in lz77_sequences])
         )
+        # Encode match lengths (length of each back-reference)
         encoded_bitarray += coder.encode_block(
             DataBlock([l.match_length for l in lz77_sequences])
         )
+        # Encode match offsets (distance to back-reference)
         encoded_bitarray += coder.encode_block(
             DataBlock([l.match_offset for l in lz77_sequences])
         )
@@ -208,26 +219,31 @@ class LZ77StreamsEncoderCanonicalAll(LZ77StreamsEncoder):
 class LZ77StreamsDecoderCanonicalAll(LZ77StreamsDecoder):
 
     def decode_lz77_sequences(self, encoded_bitarray: BitArray):
+        # Use canonical Huffman decoder for all LZ77 sequence streams
         coder = CanonicalLogScaleBinnedIntegerDecoder(
             offset=self.log_scale_binned_coder_offset
         )
 
         num_bits_consumed = 0
 
+        # Decode literal counts stream
         literal_counts, bits_lit = coder.decode_block(encoded_bitarray)
-        encoded_bitarray = encoded_bitarray[bits_lit:]
+        encoded_bitarray = encoded_bitarray[bits_lit:]  # Advance bit position
         num_bits_consumed += bits_lit
 
+        # Decode match lengths stream
         match_lengths, bits_len = coder.decode_block(encoded_bitarray)
-        encoded_bitarray = encoded_bitarray[bits_len:]
+        encoded_bitarray = encoded_bitarray[bits_len:]  # Advance bit position
         num_bits_consumed += bits_len
 
+        # Decode match offsets stream
         match_offsets, bits_off = coder.decode_block(encoded_bitarray)
-        encoded_bitarray = encoded_bitarray[bits_off:]
+        encoded_bitarray = encoded_bitarray[bits_off:]  # Advance bit position
         num_bits_consumed += bits_off
 
         from scl.compressors.lz77 import LZ77Sequence
 
+        # Reconstruct LZ77 sequences from decoded streams
         lz77_sequences = [
             LZ77Sequence(lc, ml, mo)
             for lc, ml, mo in zip(
@@ -267,23 +283,22 @@ class LZ77DecoderCanonicalAll(LZ77Decoder):
         self.streams_decoder = LZ77StreamsDecoderCanonicalAll()
 
 
-# ---------------------------------------------------------------------------
-# Header overhead measurement
-# ---------------------------------------------------------------------------
-
 
 def compute_literal_header_bits_empirical(literals: List[int]) -> int:
     """Count header bits for empirical Huffman (counts array)."""
     if not literals:
         return ENCODED_BLOCK_SIZE_HEADER_BITS
 
+    # Build frequency counts for all 256 possible byte values
     counts = DataBlock(literals).get_counts()
     for i in range(256):
         if i not in counts:
-            counts[i] = 0
-    counts_list = [counts[i] for i in range(256)]
+            counts[i] = 0  # Ensure all 256 entries are present
+    counts_list = [counts[i] for i in range(256)]  # Convert to ordered list
 
+    # Encode frequency counts using Elias-Delta compression
     counts_encoding = EliasDeltaUintEncoder().encode_block(DataBlock(counts_list))
+    # Header format: [size_header][elias_delta_counts]
     header_bits = ENCODED_BLOCK_SIZE_HEADER_BITS + len(counts_encoding)
     return header_bits
 
@@ -293,46 +308,53 @@ def compute_literal_header_bits_canonical(literals: List[int]) -> int:
     if not literals:
         return ENCODED_BLOCK_SIZE_HEADER_BITS
 
+    # Build frequency distribution from literal bytes
     counts = DataBlock(literals).get_counts()
     prob_dist = ProbabilityDist.normalize_prob_dict(counts)
 
+    # Generate standard Huffman codes to get code lengths
     huff_encoder = HuffmanEncoder(prob_dist)
     huff_table = huff_encoder.encoding_table
 
-    code_lengths = [0] * 256
+    # Extract code lengths for all 256 possible byte values
+    code_lengths = [0] * 256  # 0 means symbol not used
     for sym, bits in huff_table.items():
-        code_lengths[sym] = len(bits)
+        code_lengths[sym] = len(bits)  # Store code length for each symbol
 
+    # Encode code lengths using Elias-Delta compression
     length_header_bits = EliasDeltaUintEncoder().encode_block(DataBlock(code_lengths))
+    # Header format: [size_header][elias_delta_code_lengths]
     header_bits = ENCODED_BLOCK_SIZE_HEADER_BITS + len(length_header_bits)
     return header_bits
 
 
-# ---------------------------------------------------------------------------
-# Benchmark logic
-# ---------------------------------------------------------------------------
-
 
 def run_single_file_benchmark(path: str, block_size: int = 100_000) -> None:
+    """
+    Benchmark a single file with three compression methods:
+    1. Baseline LZ77 (empirical Huffman everywhere)
+    2. Canonical literals (canonical Huffman for literals only)
+    3. Canonical all (canonical Huffman for all streams)
+    """
     raw_size = os.path.getsize(path)
 
     print(f"\n=== Benchmark on file: {path} ===")
     print(f"Raw size: {raw_size} bytes ({raw_size / 1024 / 1024:.2f} MB)")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # baseline
-        base_enc = LZ77Encoder()
+        base_enc = LZ77Encoder()  
         base_dec = LZ77Decoder()
 
         base_encoded_path = os.path.join(tmpdir, "baseline.lz77")
         base_decoded_path = os.path.join(tmpdir, "baseline.dec")
 
+        # Measure encoding time with progress bar
         start_time = time.time()
         encode_file_with_progress(base_enc, path, base_encoded_path, block_size=block_size)
         baseline_encode_time = time.time() - start_time
 
+        # Verify lossless compression
         base_dec.decode_file(base_encoded_path, base_decoded_path)
-
         with open(path, "rb") as f_in, open(base_decoded_path, "rb") as f_out:
             assert f_in.read() == f_out.read(), "Baseline LZ77 decode mismatch!"
 
