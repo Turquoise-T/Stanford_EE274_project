@@ -92,25 +92,25 @@ def _measure_encode_time_s(
     warmup = max(0, int(warmup))
     trials = max(1, int(trials))
 
-    # Warmup runs (not recorded).
+    # Warmup runs (not recorded) - helps with CPU caching and JIT effects
     for i in range(warmup):
-        encoder = encoder_factory()
+        encoder = encoder_factory()  # Fresh encoder to avoid state pollution
         tmp_out = f"{out_path}.warmup.{i}"
         encoder.encode_file(in_path, tmp_out, block_size=block_size)
         try:
-            os.remove(tmp_out)
+            os.remove(tmp_out)  # Clean up temporary files
         except OSError:
             pass
 
     times: List[float] = []
     for i in range(trials):
-        encoder = encoder_factory()
-        tmp_out = out_path if i == trials - 1 else f"{out_path}.trial.{i}"
+        encoder = encoder_factory()  # Fresh encoder for each trial
+        tmp_out = out_path if i == trials - 1 else f"{out_path}.trial.{i}"  # Keep final output
         start = time.perf_counter()
         encoder.encode_file(in_path, tmp_out, block_size=block_size)
         elapsed = time.perf_counter() - start
         times.append(elapsed)
-        if i != trials - 1:
+        if i != trials - 1: 
             try:
                 os.remove(tmp_out)
             except OSError:
@@ -174,27 +174,31 @@ class TANSLogScaleBinnedIntegerEncoder(DataEncoder):
         residuals: List[int] = []
         residual_num_bits: List[int] = []
 
+        # Log-scale binning: map large integers to (bin, residual) pairs
         for val in data_block.data_list:
             assert val >= 0
-            if val < self.offset:
+            if val < self.offset:  # Small values go directly to bins
                 bins.append(val)
             else:
                 val_minus_offset = val - self.offset
                 val_plus_1 = val_minus_offset + 1
-                log_val_plus_1 = int(math.log2(val_plus_1))
+                log_val_plus_1 = int(math.log2(val_plus_1))  # Determine bin index
                 if log_val_plus_1 >= self.max_num_bins:
                     raise ValueError(
                         f"Value {val} is too large to be encoded with {self.max_num_bins} bins"
                     )
                 bins.append(log_val_plus_1 + self.offset)
-                residuals.append(val_plus_1 - 2**log_val_plus_1)
+                residuals.append(val_plus_1 - 2**log_val_plus_1)  # Store remainder
                 residual_num_bits.append(log_val_plus_1)
 
+        # Encode bin indices using tANS
         bins_encoding = self.tans_encoder.encode(bins)
 
+        # Store frequency table for tANS decoder
         freqs = Counter(bins)
         freq_encoding = self._encode_frequencies(freqs)
 
+        # Encode residuals using fixed-width encoding
         residuals_encoding = BitArray()
         for residual, num_bits in zip(residuals, residual_num_bits):
             if num_bits == 0:
@@ -219,18 +223,21 @@ class TANSLogScaleBinnedIntegerDecoder(DataDecoder):
         self.tans_decoder = TANSDecoder(table_log=table_log)
 
     def decode_block(self, encoded_bitarray: BitArray):
+        # First, decode the frequency table for tANS
         freqs, bits_consumed = self._decode_frequencies(encoded_bitarray)
         encoded_bitarray = encoded_bitarray[bits_consumed:]
 
+        # Decode bin indices using tANS
         num_symbols = sum(freqs.values())
         bins_decoded, bins_bits_used = self.tans_decoder.decode(encoded_bitarray, num_symbols, freqs)
         encoded_bitarray = encoded_bitarray[bins_bits_used:]
 
+        # Reconstruct original values from (bin, residual) pairs
         decoded: List[int] = []
         bit_position = 0
 
         for encoded_bin in bins_decoded:
-            if encoded_bin < self.offset:
+            if encoded_bin < self.offset:  # Small values stored directly
                 decoded.append(encoded_bin)
             else:
                 encoded_bin_minus_offset = encoded_bin - self.offset
@@ -240,9 +247,11 @@ class TANSLogScaleBinnedIntegerDecoder(DataDecoder):
                 if num_bits == 0:
                     residual = 0
                 else:
+                    # Read residual from fixed-width encoding
                     residual = bitarray_to_uint(encoded_bitarray[bit_position : bit_position + num_bits])
                     bit_position += num_bits
 
+                # Reconstruct original value: offset + 2^log + residual - 1
                 decoded_val = self.offset + 2**log_val_plus_1 + residual - 1
                 decoded.append(decoded_val)
 
@@ -307,12 +316,15 @@ class LZ77StreamsEncoderTANSLiterals(LZ77StreamsEncoder):
         self.table_log = table_log
 
     def encode_literals(self, literals: List[int]) -> BitArray:
+        # Build frequency counts for all 256 possible byte values
         counts_list = _build_literal_counts_list(literals)
+        # Encode frequency table using Elias-Delta (for compatibility with baseline)
         header = _encode_literal_counts_header_from_counts(counts_list)
 
         if not literals:
             return header
 
+        # Encode literal bytes using tANS
         encoder = TANSEncoder(table_log=self.table_log)
         encoded_data = encoder.encode(literals)
 
@@ -325,11 +337,13 @@ class LZ77StreamsDecoderTANSLiterals(LZ77StreamsDecoder):
         self.table_log = table_log
 
     def decode_literals(self, encoded_bitarray: BitArray) -> Tuple[List[int], int]:
+        # Decode frequency table from Elias-Delta header
         freqs, num_literals, bit_pos = _decode_literal_counts_header(encoded_bitarray)
 
         if num_literals == 0:
             return [], bit_pos
 
+        # Decode literal bytes using tANS
         decoder = TANSDecoder(table_log=self.table_log)
         payload = encoded_bitarray[bit_pos:]
         literals, bits_used = decoder.decode(payload, num_literals, freqs)
@@ -368,21 +382,26 @@ class LZ77StreamsEncoderTANSAll(LZ77StreamsEncoder):
     def encode_lz77_sequences(self, lz77_sequences):
         encoded_bitarray = BitArray()
 
+        # Extract the three LZ77 streams
         literal_counts = [seq.literal_count for seq in lz77_sequences]
         match_lengths = [seq.match_length for seq in lz77_sequences]
         match_offsets = [seq.match_offset for seq in lz77_sequences]
 
+        # Encode each stream separately using tANS
         for data_list in [literal_counts, match_lengths, match_offsets]:
             if not data_list:
-                encoded_bitarray += uint_to_bitarray(0, 32)
+                encoded_bitarray += uint_to_bitarray(0, 32)  
                 continue
 
+            # Use tANS for this stream
             encoder = TANSEncoder(table_log=self.table_log)
             encoded = encoder.encode(data_list)
 
+            # Store frequency table for decoder
             freqs = Counter(data_list)
             freq_encoding = self._encode_frequencies(freqs)
 
+            # Format: [count][frequencies][tANS_data]
             encoded_bitarray += uint_to_bitarray(len(data_list), 32)
             encoded_bitarray += freq_encoding
             encoded_bitarray += encoded
@@ -506,9 +525,6 @@ def compute_literal_header_bits_tans(literals: List[int], table_log: int) -> int
     return len(_encode_literal_counts_header_from_counts(_build_literal_counts_list(literals)))
 
 
-# ---------------------------------------------------------------------------
-# Benchmark: per-file compression & header comparison
-# ---------------------------------------------------------------------------
 
 
 def run_single_file_benchmark(
@@ -552,7 +568,8 @@ def run_single_file_benchmark(
         print(f"Input: {display_name}")
         print(f"Raw size: {raw_size:,} bytes")
 
-        # ---------------- Calculate header sizes (single-block parse) ----------------
+
+        # Parse file once to get literal distribution for header size calculation
         with open(in_path, "rb") as f:
             data_bytes = list(f.read())
         data_block = DataBlock(data_bytes)
@@ -563,7 +580,8 @@ def run_single_file_benchmark(
         )
         _, lits = parser.lz77_parse_and_generate_sequences(data_block)
 
-        emp_header_bits = compute_literal_header_bits_empirical(lits)
+        # Calculate header sizes for fair comparison
+        emp_header_bits = compute_literal_header_bits_empirical(lits)  # Elias-Delta
         emp_header_bytes = emp_header_bits // 8
 
         tans_header_bytes_dict = {}
@@ -571,15 +589,16 @@ def run_single_file_benchmark(
             tans_header_bits = compute_literal_header_bits_tans(lits, table_log)
             tans_header_bytes_dict[table_log] = tans_header_bits // 8
 
-        # ---------------- Baseline LZ77 (Empirical Huffman) ----------------
+        
         print("\n[1/2] Running baseline LZ77 (Empirical Huffman)...")
         base_dec = LZ77Decoder()
 
         base_encoded_path = os.path.join(tmpdir, "baseline.lz77")
         base_decoded_path = os.path.join(tmpdir, "baseline.dec")
 
+        # Measure encoding time with proper statistical handling
         baseline_encode_time = _measure_encode_time_s(
-            lambda: LZ77Encoder(),
+            lambda: LZ77Encoder(),  # Fresh encoder for each trial
             in_path,
             base_encoded_path,
             block_size=block_size,
@@ -588,13 +607,14 @@ def run_single_file_benchmark(
             stat=encode_stat,
         )
 
+        # Verify lossless compression
         base_dec.decode_file(base_encoded_path, base_decoded_path)
         with open(in_path, "rb") as f_in, open(base_decoded_path, "rb") as f_out:
             assert f_in.read() == f_out.read(), "Baseline LZ77 decode mismatch!"
 
         baseline_size = os.path.getsize(base_encoded_path)
         baseline_speed = (
-            (raw_size / baseline_encode_time) / (1024 * 1024)
+            (raw_size / baseline_encode_time) / (1024 * 1024)  # Convert to MB/s
             if baseline_encode_time > 0 and raw_size > 0
             else 0.0
         )
@@ -608,7 +628,7 @@ def run_single_file_benchmark(
             }
         }
 
-        # ------------- LZ77 with tANS on different table_log values -------------
+
         for table_log in table_logs:
             print(f"\n[2/2] Running LZ77 + tANS (literals, table_log={table_log})...")
             tans_lit_dec = LZ77DecoderTANSLiterals(table_log=table_log)
@@ -616,6 +636,7 @@ def run_single_file_benchmark(
             tans_lit_encoded_path = os.path.join(tmpdir, f"tans_lit_{table_log}.lz77")
             tans_lit_decoded_path = os.path.join(tmpdir, f"tans_lit_{table_log}.dec")
 
+            # Measure tANS encoding time (lambda captures table_log correctly)
             tans_lit_encode_time = _measure_encode_time_s(
                 lambda tl=table_log: LZ77EncoderTANSLiterals(table_log=tl),
                 in_path,
@@ -626,6 +647,7 @@ def run_single_file_benchmark(
                 stat=encode_stat,
             )
 
+            # Verify lossless compression for tANS variant
             tans_lit_dec.decode_file(tans_lit_encoded_path, tans_lit_decoded_path)
             with open(in_path, "rb") as f_in, open(tans_lit_decoded_path, "rb") as f_out:
                 assert (
@@ -634,7 +656,7 @@ def run_single_file_benchmark(
 
             tans_lit_size = os.path.getsize(tans_lit_encoded_path)
             tans_lit_speed = (
-                (raw_size / tans_lit_encode_time) / (1024 * 1024)
+                (raw_size / tans_lit_encode_time) / (1024 * 1024)  # Convert to MB/s
                 if tans_lit_encode_time > 0 and raw_size > 0
                 else 0.0
             )
@@ -645,7 +667,7 @@ def run_single_file_benchmark(
                 "enc_speed": tans_lit_speed,
             }
 
-        # ---------------- Print Results with Header Info ----------------
+
         print(f"\n{'=' * 85}")
         print("COMPRESSION RESULTS")
         print(f"{'=' * 85}")
@@ -662,6 +684,7 @@ def run_single_file_benchmark(
             ratio = data["ratio"]
             enc_time_s = data.get("enc_time_s", 0.0)
             speed = data.get("enc_speed", 0.0)
+            # Calculate percentage difference from baseline
             vs_baseline = (
                 (size - baseline_size_ref) / baseline_size_ref * 100
                 if baseline_size_ref > 0
@@ -669,6 +692,7 @@ def run_single_file_benchmark(
             )
             sign = "+" if vs_baseline > 0 else ""
 
+            # Display appropriate header size for each method
             if method == "Baseline (Empirical Huffman)":
                 header_str = f"{emp_header_bytes:,}"
             else:
@@ -683,7 +707,7 @@ def run_single_file_benchmark(
                 f"{enc_time_s:>10.3f} {speed:>12.2f} {ratio:>9.4f} {sign}{vs_baseline:>10.2f}%"
             )
 
-        # Build suite rows (Baseline vs tANS literals only)
+        # Build suite rows (Baseline vs tANS literals only) for summary table
         for table_log in table_logs:
             method_key = f"tANS literals (table_log={table_log})"
             tans_size = results[method_key]["size"]
